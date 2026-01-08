@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from key_manager import MultiProviderWrapper
+from keycycle import MultiProviderWrapper
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent

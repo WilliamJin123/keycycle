@@ -7,7 +7,7 @@ from typing import Dict
 
 from dotenv import load_dotenv
 from agno.agent import Agent
-from key_manager import MultiProviderWrapper 
+from keycycle import MultiProviderWrapper 
 
 CURRENT_DIR = Path(__file__).resolve().parent
 ENV_PATH = CURRENT_DIR / "local.env"

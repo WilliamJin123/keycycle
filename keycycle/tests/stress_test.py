@@ -9,7 +9,7 @@ from agno.models.groq import Groq
 from agno.models.google import Gemini
 from agno.models.openrouter import OpenRouter
 
-from key_manager import MultiProviderWrapper
+from keycycle import MultiProviderWrapper
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = str(PROJECT_ROOT / "local.env")

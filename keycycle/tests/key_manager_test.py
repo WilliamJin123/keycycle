@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-from key_manager import MultiProviderWrapper
+from keycycle import MultiProviderWrapper
 
 from agno.agent import Agent
 
