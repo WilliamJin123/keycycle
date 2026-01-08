@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keycycle"
-version = "0.1.1"
+version = "0.1.2"
 authors = [
   { name="William Jin", email="jinwilliam.jin@gmail.com" },
 ]
@@ -27,8 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai"]
 agno = ["agno"]
-all = ["openai", "agno"]
+cohere = ["cohere"]
+cerebras = ["cerebras-cloud-sdk"]
+groq = ["groq"]
+openrouter = ["openrouter"]
+all = ["openai", "agno", "cohere", "cerebras-cloud-sdk", "groq", "openrouter"]
 
 [tool.setuptools.packages.find]
-where = ["."]  
-include = ["keycycle*"]
+where = ["keycycle"]  

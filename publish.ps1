@@ -47,5 +47,5 @@ if (Test-Path dist) {
     Write-Host "Error: Build failed, dist directory not found." -ForegroundColor Red
     exit 1
 }
-
+Set-Location -Path $PSScriptRoot
 Write-Host "--- Done! ---" -ForegroundColor Green

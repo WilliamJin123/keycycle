@@ -45,4 +45,5 @@ else
     exit 1
 fi
 
+cd..
 echo "--- Done! ---"

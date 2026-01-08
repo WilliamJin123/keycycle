@@ -14,7 +14,7 @@ from rich.markup import escape
 from .utils import get_agno_model_class
 from .key_rotation.rotation_manager import RotatingKeyManager
 from .key_rotation.rotating_mixin import RotatingCredentialsMixin
-from .config.dataclasses import RateLimits, UsageSnapshot
+from .config.dataclasses import KeyUsage, RateLimits, UsageSnapshot
 from .config.enums import RateLimitStrategy
 from .config.constants import MODEL_LIMITS, PROVIDER_STRATEGIES
 from .usage.db_logic import UsageDatabase
@@ -129,7 +129,7 @@ class MultiProviderWrapper:
         wait: bool = True, 
         timeout: float = 10
     ):
-        """Finds a valid key"""
+        """Finds the first valid key"""
         mid = model_id or self.default_model_id
         limits = self._resolve_limits(mid)
 
@@ -253,7 +253,102 @@ class MultiProviderWrapper:
         
         model_instance._get_metrics = metrics_hook
         return model_instance
-    
+
+    def get_api_key(
+        self,
+        model_id: Optional[str] = None,
+        estimated_tokens: int = 1000,
+        wait: bool = True,
+        timeout: float = 10
+    ) -> str:
+        """
+        Get a valid API key for direct use (e.g., embeddings, custom endpoints).
+        
+        Args:
+            model_id: Model identifier for rate limiting (uses default if None)
+            estimated_tokens: Estimated tokens for this request
+            wait: Whether to wait for an available key
+            timeout: Maximum time to wait for a key
+            
+        Returns:
+            A valid API key string
+            
+        Example:
+            >>> wrapper = MultiProviderWrapper.from_env('cohere', 'command-r-plus')
+            >>> api_key = wrapper.get_api_key()
+            >>> # Use with cohere SDK directly
+            >>> import cohere
+            >>> co = cohere.Client(api_key)
+            >>> response = co.embed(texts=["hello"], model="embed-english-v3.0")
+        """
+        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout)
+        return key_usage.api_key
+
+    def get_api_key_with_context(
+        self,
+        model_id: Optional[str] = None,
+        estimated_tokens: int = 1000,
+        wait: bool = True,
+        timeout: float = 10
+    ) -> tuple[str, KeyUsage]:
+        """
+        Get an API key along with its usage context for manual tracking.
+        This gives you both the key and the key_usage object for more control.
+        
+        Args:
+            model_id: Model identifier for rate limiting
+            estimated_tokens: Estimated tokens for this request
+            wait: Whether to wait for an available key
+            timeout: Maximum time to wait
+            
+        Returns:
+            Tuple of (api_key: str, key_usage_obj: KeyUsage)
+        """
+        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout)
+        return key_usage.api_key, key_usage
+
+    def record_key_usage(
+        self,
+        api_key: str,
+        model_id: Optional[str] = None,
+        actual_tokens: int = 0,
+        estimated_tokens: int = 1000
+    ):
+        """
+        Record usage for a key obtained via get_api_key().
+        Call this after you're done using the key to update usage tracking.
+        
+        Args:
+            api_key: The API key that was used
+            model_id: Model that was used (uses default if None)
+            actual_tokens: Actual tokens consumed (if known)
+            estimated_tokens: Estimated tokens (used if actual unknown)
+            
+        Example:
+            >>> api_key = wrapper.get_api_key(estimated_tokens=500)
+            >>> # ... use api_key for embeddings ...
+            >>> wrapper.record_key_usage(api_key, model_id="embed-english-v3.0", actual_tokens=450)
+        """
+        mid = model_id or self.default_model_id
+        
+        # Find the key_usage object for this api_key
+        key_obj = None
+        for ku in self.manager.keys:
+            if ku.api_key == api_key:
+                key_obj = ku
+                break
+        
+        if not key_obj:
+            self.logger.warning(f"API key not found in manager for recording usage")
+            return
+        
+        self.manager.record_usage(
+            key_obj=key_obj,
+            model_id=mid,
+            actual_tokens=actual_tokens,
+            estimated_tokens=estimated_tokens
+        )
+
     # --- PRINTING HELPERS ---
     
     def _create_usage_table(self, title: str, data: List[tuple[str, UsageSnapshot]]) -> Table:
@@ -281,9 +376,9 @@ class MultiProviderWrapper:
 
         # Define Columns
         table.add_column("Identifier", style=f"bold {c_identifier}", no_wrap=True)
-        table.add_column("Requests (m/h/d)",  justify="center", style=c_req, no_wrap=True)
-        table.add_column("Tokens (m/h/d)",  justify="center", style=c_tok, no_wrap=True)
-        table.add_column("Total Reqs", justify="center", style=f"{c_req}", no_wrap=True)
+        table.add_column("Requests ([white]m / h / d[/])",  justify="center", style=c_req, no_wrap=True)
+        table.add_column("Tokens ([white]m / h / d[/])",  justify="center", style=c_tok, no_wrap=True)
+        table.add_column("Total Requests", justify="center", style=f"{c_req}", no_wrap=True)
         table.add_column("Total Tokens", justify="center", style=f"bold {c_tok}", no_wrap=True)
 
         for label, s in data:
@@ -369,7 +464,7 @@ class MultiProviderWrapper:
         data = self.manager.get_model_stats(model_id)
         
         self.console.print()
-        self.console.rule(f"[bold]Model Report: {model_id}[/]", style="#B9B9B9")
+        self.console.rule(self.console.rule(f"[bold]Model Report: [blue]{model_id}[/][/] ", style="#B9B9B9"))
         
         # 1. Total Summary
         s = data.total

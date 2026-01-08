@@ -1,14 +1,31 @@
+import os
 from .dataclasses import RateLimits
 from .enums import RateLimitStrategy
+from typing import Any, TypedDict
 
-PROVIDER_STRATEGIES = {
+class ModelDict(TypedDict):
+    """All the provider currrently supported"""
+    cerebras: Any
+    groq: Any
+    gemini: Any
+    openrouter: Any
+    cohere: Any
+
+PROVIDER_STRATEGIES: ModelDict = {
     'cerebras': RateLimitStrategy.PER_MODEL,
     'groq': RateLimitStrategy.PER_MODEL,
     'gemini': RateLimitStrategy.PER_MODEL,
     'openrouter': RateLimitStrategy.GLOBAL,
+    'cohere': RateLimitStrategy.PER_MODEL
 }
 
-MODEL_LIMITS = {
+COHERE_TIERS = {
+    'free': RateLimits(20, 1200, 72000),
+    'pro': RateLimits(500, 30000, 1440000),
+    'enterprise': RateLimits(1000, 60000, 2880000),
+}
+
+MODEL_LIMITS: ModelDict = {
     'cerebras': {
         'gpt-oss-120b': RateLimits(30, 900, 14400, 60000, 1000000, 1000000),
         'llama3.1-8b': RateLimits(30, 900, 14400, 60000, 1000000, 1000000),
@@ -19,6 +36,8 @@ MODEL_LIMITS = {
     },
     'groq': {
         'allam-2-7b': RateLimits(30, 1800, 7000, 6000, 360000, 500000),
+        'canopylabs/orpheus-arabic-saudi': RateLimits(10, 100, 1200, 3600),
+        'canopylabs/orpheus-v1-english': RateLimits(10, 100, 1200, 3600),
         'groq/compound': RateLimits(30, 250, 250, 70000, None, None),
         'groq/compound-mini': RateLimits(30, 250, 250, 70000, None, None),
         'llama-3.1-8b-instant': RateLimits(30, 1800, 14400, 6000, 360000, 500000),
@@ -53,4 +72,8 @@ MODEL_LIMITS = {
     'openrouter': {
         'default': RateLimits(20, 50, 50),
     },
+    'cohere':{
+        # Same for every model
+        'default': COHERE_TIERS.get(os.getenv('COHERE_TIER', 'free').lower(), COHERE_TIERS['free'])
+    }
 }
