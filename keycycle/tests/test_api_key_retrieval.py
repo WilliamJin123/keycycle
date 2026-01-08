@@ -43,7 +43,7 @@ class TestKeyRetrievalReal:
         assert len(api_key) > 0
         print(f"\n Retrieved API key: {api_key[:10]}...")
     
-    def test_embedding_with_get_api_key(self, wrapper, cohere_client):
+    def test_embedding_with_get_api_key(self, wrapper: MultiProviderWrapper, cohere_client):
         """Test real embedding request using get_api_key()"""
         # Get API key
         api_key = wrapper.get_api_key(
@@ -78,7 +78,7 @@ class TestKeyRetrievalReal:
         
         print(f" Recorded usage: ~{estimated_tokens} tokens")
     
-    def test_embedding_with_context(self, wrapper, cohere_client):
+    def test_embedding_with_context(self, wrapper: MultiProviderWrapper, cohere_client):
         """Test embedding using get_api_key_with_context()"""
         # Get key with context
         api_key, key_context = wrapper.get_api_key_with_context(
@@ -110,7 +110,7 @@ class TestKeyRetrievalReal:
         
         print(f" Recorded usage via context: {estimated_tokens} tokens")
     
-    def test_multiple_embedding_calls_rotation(self, wrapper, cohere_client):
+    def test_multiple_embedding_calls_rotation(self, wrapper: MultiProviderWrapper, cohere_client):
         """Test that multiple embedding calls work and potentially rotate keys"""
         initial_stats = wrapper.manager.get_global_stats()
         initial_requests = initial_stats.total.total_requests
@@ -155,7 +155,7 @@ class TestKeyRetrievalReal:
         assert final_requests >= initial_requests + 3
         print(f"✓ Final total requests: {final_requests} (added {final_requests - initial_requests})")
     
-    def test_chat_and_embed_mixed(self, wrapper, cohere_client):
+    def test_chat_and_embed_mixed(self, wrapper: MultiProviderWrapper, cohere_client):
         """Test using wrapper for both chat and embeddings"""
         # First, do an embedding
         embed_key = wrapper.get_api_key(
@@ -222,7 +222,7 @@ class TestKeyRetrievalReal:
         assert global_stats.total.total_requests > 0
         assert global_stats.total.total_tokens > 0
     
-    def test_exhaustion_and_rotation(self, wrapper, cohere_client):
+    def test_exhaustion_and_rotation(self, wrapper: MultiProviderWrapper, cohere_client):
         """Test behavior when a key gets exhausted (rate limited)"""
         print("\n⚠ Testing rate limit behavior (may be slow)...")
         
