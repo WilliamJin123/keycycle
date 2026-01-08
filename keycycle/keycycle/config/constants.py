@@ -33,6 +33,7 @@ MODEL_LIMITS: ModelDict = {
         'qwen-3-32b': RateLimits(30, 900, 14400, 60000, 1000000, 1000000),
         'qwen-3-235b-a22b-instruct-2507': RateLimits(30, 900, 14400, 60000, 1000000, 1000000),
         'zai-glm-4.6': RateLimits(10, 100, 100, 150000, 1000000, 1000000),
+        'zai-glm-4.7': RateLimits(10, 100, 100, 150000, 1000000, 1000000),
     },
     'groq': {
         'allam-2-7b': RateLimits(30, 1800, 7000, 6000, 360000, 500000),
