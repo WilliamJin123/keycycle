@@ -1,30 +1,22 @@
 import asyncio
 import os
 import sys
+import pytest
 from pathlib import Path
-
-# Add project root to sys.path
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
 from dotenv import load_dotenv
+from keycycle import MultiProviderWrapper
 from agno.agent import Agent
-from keycycle import MultiProviderWrapper 
+# Add project root to sys.path
 
-# Load environment (expecting local.env or .env in tests dir or root)
-ENV_PATH = CURRENT_DIR / "local.env"
-if not ENV_PATH.exists():
-    ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(dotenv_path=ENV_PATH, override=True)
+load_dotenv(dotenv_path="./local.env", override=True)
 
+@pytest.mark.anyio
 async def test_gemini_sqlite():
     print(f"--- Starting Gemini SQLite Test ---")
     
     # 1. Setup SQLite DB Path
-    db_file = "test_usage_gemini.db"
-    db_path = CURRENT_DIR / db_file
+    db_path = Path("./test_usage_gemini.db")
     db_url = f"sqlite:///{db_path}"
     
     # Ensure clean state
@@ -42,7 +34,7 @@ async def test_gemini_sqlite():
         gemini_wrapper = MultiProviderWrapper.from_env(
             provider='gemini',
             default_model_id='gemini-2.5-flash',
-            env_file=str(ENV_PATH),
+            env_file="./local.env",
             db_url=db_url  # Passing the SQLite URL here
         )
         print("Wrapper initialized successfully.")
@@ -124,19 +116,6 @@ async def test_gemini_sqlite():
             
         if 'read_db' in locals():
             read_db.engine.dispose()
-
-        # Try to delete the file
-        try:
-            if db_path.exists():
-                # On Windows, file might be locked if engine not fully disposed or async thread stuck
-                # But we want to clean up for the next test run or keep it to inspect?
-                # The user didn't explicitly say to delete it, but tests usually cleanup.
-                # However, for manual verification, keeping it might be useful.
-                # I'll leave it but print where it is.
-                print(f"Test DB file left at: {db_path}")
-                # os.remove(db_path) 
-        except Exception as e:
-            print(f"Could not remove DB file: {e}")
 
 if __name__ == "__main__":
     asyncio.run(test_gemini_sqlite())

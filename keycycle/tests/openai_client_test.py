@@ -9,7 +9,7 @@ from keycycle import MultiProviderWrapper
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_PATH = str(PROJECT_ROOT / "local.env")
 
-async def test_provider(provider: str, model_id: str):
+async def run_provider_test(provider: str, model_id: str):
     print(f"\n{'='*60}")
     print(f"Testing Provider: {provider.upper()} (Model: {model_id})")
     print(f"{'='*60}")
@@ -82,7 +82,7 @@ async def main():
     ]
 
     for test in test_cases:
-        await test_provider(test["provider"], test["model_id"])
+        await run_provider_test(test["provider"], test["model_id"])
 
 if __name__ == "__main__":
     asyncio.run(main())

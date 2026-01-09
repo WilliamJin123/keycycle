@@ -27,8 +27,6 @@ class MultiProviderWrapper:
     PROVIDER_STRATEGIES = PROVIDER_STRATEGIES
     MODEL_LIMITS = MODEL_LIMITS
     
-    _RotatingClass = None
-    
     @staticmethod
     def load_api_keys(provider: str, env_file: Optional[str] = None) -> List[str]:
         """Load API keys from environment variables"""
@@ -102,6 +100,7 @@ class MultiProviderWrapper:
         self.strategy = self.PROVIDER_STRATEGIES.get(self.provider, RateLimitStrategy.PER_MODEL)
         self.manager = RotatingKeyManager(api_keys, self.provider, self.strategy, self.db)
         self._model_cache = {}
+        self._RotatingClass = None
         self.console = Console()
 
     def toggle_debug(self, enable: bool):
@@ -216,42 +215,43 @@ class MultiProviderWrapper:
         RotatingProviderClass = self._RotatingClass
         # Get Initial Key
         model_id = kwargs.get('id', self.default_model_id)  
-        initial_key_usage = self.get_key_usage(model_id, estimated_tokens, wait=wait, timeout=timeout)
         final_kwargs = {**self.model_kwargs, **kwargs}
         if 'id' not in final_kwargs:
             final_kwargs['id'] = model_id
 
+        initial_key_usage = self.get_key_usage(model_id, estimated_tokens, wait=wait, timeout=timeout)
+        
+
         model_instance = RotatingProviderClass(
             api_key=initial_key_usage.api_key,
+            wrapper=self,
+            rotating_wait=wait,
+            rotating_timeout=timeout,
+            rotating_estimated_tokens=estimated_tokens,
+            rotating_max_retries=max_retries,
             **final_kwargs
         )
 
-        model_instance.wrapper = self
-        model_instance._rotating_wait = wait
-        model_instance._rotating_timeout = timeout
-        model_instance._estimated_tokens = estimated_tokens
-        model_instance._max_retries = max_retries
+        # orig_metrics = getattr(model_instance, "_get_metrics", None)
+        # def metrics_hook(*args, **kwargs):
+        #     if orig_metrics:
+        #         m = orig_metrics(*args, **kwargs)
+        #     else:
+        #         m = None
+        #     actual = 0
+        #     if m and hasattr(m, 'total_tokens') and m.total_tokens is not None:
+        #         actual = m.total_tokens
+        #     # Retrieve the estimate we set on the instance earlier
+        #     estimate = getattr(model_instance, "_estimated_tokens", 1000)
+        #     self.manager.record_usage(
+        #         key_obj=initial_key_usage,
+        #         model_id=model_id, 
+        #         actual_tokens=actual, 
+        #         estimated_tokens=estimate
+        #     )
+        #     return m
         
-        orig_metrics = getattr(model_instance, "_get_metrics", None)
-        def metrics_hook(*args, **kwargs):
-            if orig_metrics:
-                m = orig_metrics(*args, **kwargs)
-            else:
-                m = None
-            actual = 0
-            if m and hasattr(m, 'total_tokens') and m.total_tokens is not None:
-                actual = m.total_tokens
-            # Retrieve the estimate we set on the instance earlier
-            estimate = getattr(model_instance, "_estimated_tokens", 1000)
-            self.manager.record_usage(
-                key_obj=initial_key_usage,
-                model_id=model_id, 
-                actual_tokens=actual, 
-                estimated_tokens=estimate
-            )
-            return m
-        
-        model_instance._get_metrics = metrics_hook
+        # model_instance._get_metrics = metrics_hook
         return model_instance
 
     def get_api_key(
@@ -332,22 +332,11 @@ class MultiProviderWrapper:
         mid = model_id or self.default_model_id
         
         # Find the key_usage object for this api_key
-        key_obj = None
-        for ku in self.manager.keys:
-            if ku.api_key == api_key:
-                key_obj = ku
-                break
-        
-        if not key_obj:
-            self.logger.warning(f"API key not found in manager for recording usage")
-            return
-        
-        self.manager.record_usage(
-            key_obj=key_obj,
-            model_id=mid,
-            actual_tokens=actual_tokens,
-            estimated_tokens=estimated_tokens
-        )
+        key_obj = next((k for k in self.manager.keys if k.api_key == api_key), None)
+        if key_obj:
+            self.manager.record_usage(key_obj, mid, actual_tokens, estimated_tokens)
+        else:
+            self.logger.warning("API key not found in manager for recording usage")
 
     # --- PRINTING HELPERS ---
     
