@@ -1,0 +1,69 @@
+gemini-3-flash:
+  requests_per_minute: 5
+  requests_per_hour: 300
+  requests_per_day: 20
+  tokens_per_minute: 250000
+  tokens_per_hour: 15000000
+
+gemini-2.5-flash:
+  requests_per_minute: 5
+  requests_per_hour: 300
+  requests_per_day: 20
+  tokens_per_minute: 250000
+  tokens_per_hour: 15000000
+
+gemini-2.5-flash-lite:
+  requests_per_minute: 10
+  requests_per_hour: 600
+  requests_per_day: 20
+  tokens_per_minute: 250000
+  tokens_per_hour: 15000000
+
+gemini-2.5-flash-tts:
+  requests_per_minute: 3
+  requests_per_hour: 180
+  requests_per_day: 10
+  tokens_per_minute: 10000
+  tokens_per_hour: 600000
+
+gemini-robotics-er-1.5-preview:
+  requests_per_minute: 10
+  requests_per_hour: 600
+  requests_per_day: 250
+  tokens_per_minute: 250000
+  tokens_per_hour: 15000000
+
+gemma-3-12b:
+  requests_per_minute: 30
+  requests_per_hour: 1800
+  requests_per_day: 14400
+  tokens_per_minute: 15000
+  tokens_per_hour: 900000
+
+gemma-3-1b:
+  requests_per_minute: 30
+  requests_per_hour: 1800
+  requests_per_day: 14400
+  tokens_per_minute: 15000
+  tokens_per_hour: 900000
+
+gemma-3-27b:
+  requests_per_minute: 30
+  requests_per_hour: 1800
+  requests_per_day: 14400
+  tokens_per_minute: 15000
+  tokens_per_hour: 900000
+
+gemma-3-2b:
+  requests_per_minute: 30
+  requests_per_hour: 1800
+  requests_per_day: 14400
+  tokens_per_minute: 15000
+  tokens_per_hour: 900000
+
+gemma-3-4b:
+  requests_per_minute: 30
+  requests_per_hour: 1800
+  requests_per_day: 14400
+  tokens_per_minute: 15000
+  tokens_per_hour: 900000

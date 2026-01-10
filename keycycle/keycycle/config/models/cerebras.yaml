@@ -1,0 +1,55 @@
+gpt-oss-120b:
+  requests_per_minute: 30
+  requests_per_hour: 900
+  requests_per_day: 14400
+  tokens_per_minute: 60000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+llama3.1-8b:
+  requests_per_minute: 30
+  requests_per_hour: 900
+  requests_per_day: 14400
+  tokens_per_minute: 60000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+llama-3.3-70b:
+  requests_per_minute: 30
+  requests_per_hour: 900
+  requests_per_day: 14400
+  tokens_per_minute: 60000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+qwen-3-32b:
+  requests_per_minute: 30
+  requests_per_hour: 900
+  requests_per_day: 14400
+  tokens_per_minute: 60000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+qwen-3-235b-a22b-instruct-2507:
+  requests_per_minute: 30
+  requests_per_hour: 900
+  requests_per_day: 14400
+  tokens_per_minute: 60000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+zai-glm-4.7:
+  requests_per_minute: 10
+  requests_per_hour: 100
+  requests_per_day: 100
+  tokens_per_minute: 150000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000
+
+default:
+  requests_per_minute: 10
+  requests_per_hour: 100
+  requests_per_day: 100
+  tokens_per_minute: 150000
+  tokens_per_hour: 1000000
+  tokens_per_day: 1000000

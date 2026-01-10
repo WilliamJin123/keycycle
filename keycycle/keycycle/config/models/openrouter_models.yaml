@@ -1,94 +1,97 @@
 
 - name: MiMo-V2-Flash
-  id: mimo-v2-flash
+  id: xiaomi/mimo-v2-flash:free
   max_context_length: 262000
 - name: Devstral 2 2512
-  id: devstral-2-2512
+  id: mistralai/devstral-2512:free
   max_context_length: 262000
 - name: DeepSeek R1T2 Chimera
-  id: deepseek-r1t2-chimera
+  id: tngtech/deepseek-r1t2-chimera:free
   max_context_length: 164000
 - name: DeepSeek V3.1 Nex N1
   id: deepseek-v3.1-nex-n1
   max_context_length: 131000
 - name: DeepSeek R1T Chimera
-  id: deepseek-r1t-chimera
+  id: tngtech/deepseek-r1t-chimera:free
   max_context_length: 164000
 - name: Qwen3 Coder 480B A35B
-  id: qwen3-coder-480b-a35b
+  id: qwen/qwen3-coder:free
   max_context_length: 262000
 - name: Nemotron 3 Nano 30B A3B
-  id: nemotron-3-nano-30b-a3b
+  id: nvidia/nemotron-3-nano-30b-a3b:free
   max_context_length: 256000
 - name: Nemotron Nano 12B 2 VL
-  id: nemotron-nano-12b-2-vl
+  id: nvidia/nemotron-nano-12b-v2-vl:free
   max_context_length: 128000
 - name: GLM 4.5 Air
-  id: glm-4.5-air
+  id: z-ai/glm-4.5-air:free
   max_context_length: 131000
-- name: R1 0528
-  id: r1-0528
+- name: DeepSeek R1 0528
+  id: deepseek/deepseek-r1-0528:free
   max_context_length: 164000
-- name: R1T Chimera
-  id: r1t-chimera
+- name: TNG R1T Chimera
+  id: tngtech/tng-r1t-chimera:free
   max_context_length: 164000
 - name: Gemma 3 27B
-  id: gemma-3-27b
+  id: google/gemma-3-27b-it:free
   max_context_length: 131000
 - name: Llama 3.3 70B Instruct
-  id: llama-3.3-70b-instruct
+  id: meta-llama/llama-3.3-70b-instruct:free
   max_context_length: 131000
 - name: Venice Uncensored
-  id: venice-uncensored
+  id: cognitivecomputations/dolphin-mistral-24b-venice-edition:free
   max_context_length: 33000
 - name: Gemini 2.0 Flash Experimental
-  id: gemini-2.0-flash-experimental
+  id: google/gemini-2.0-flash-exp:free
   max_context_length: 1050000
 - name: gpt-oss-120b
-  id: gpt-oss-120b
+  id: openai/gpt-oss-120b:free
   max_context_length: 131000
 - name: Hermes 3 405B Instruct
-  id: hermes-3-405b-instruct
+  id: nousresearch/hermes-3-llama-3.1-405b:free
   max_context_length: 131000
 - name: Mistral 7B Instruct
-  id: mistral-7b-instruct
+  id: mistralai/mistral-7b-instruct:free
   max_context_length: 33000
 - name: gpt-oss-20b
-  id: gpt-oss-20b
+  id: openai/gpt-oss-20b:free
   max_context_length: 131000
 - name: Mistral Small 3.1 24B
-  id: mistral-small-3.1-24b
+  id: mistralai/mistral-small-3.1-24b-instruct:free
   max_context_length: 128000
 - name: Llama 3.1 405B Instruct
-  id: llama-3.1-405b-instruct
+  id: meta-llama/llama-3.1-405b-instruct:free
   max_context_length: 131000
 - name: Nemotron Nano 9B V2
-  id: nemotron-nano-9b-v2
+  id: nvidia/nemotron-nano-9b-v2:free
   max_context_length: 128000
 - name: Trinity Mini
-  id: trinity-mini
+  id: arcee-ai/trinity-mini:free
   max_context_length: 131000
 - name: Llama 3.2 3B Instruct
-  id: llama-3.2-3b-instruct
+  id: meta-llama/llama-3.2-3b-instruct:free
   max_context_length: 131000
 - name: Qwen3 4B
-  id: qwen3-4b
+  id: qwen/qwen3-4b:free
   max_context_length: 41000
 - name: Qwen2.5-VL 7B Instruct
-  id: qwen2.5-vl-7b-instruct
+  id: qwen/qwen-2.5-vl-7b-instruct:free
   max_context_length: 33000
 - name: Gemma 3n 2B
-  id: gemma-3n-2b
+  id: google/gemma-3n-e2b-it:free
   max_context_length: 8000
 - name: Gemma 3 4B
-  id: gemma-3-4b
+  id: google/gemma-3-4b-it:free
   max_context_length: 33000
 - name: Gemma 3 12B
-  id: gemma-3-12b
+  id: google/gemma-3-12b-it:free
   max_context_length: 33000
 - name: Gemma 3n 4B
-  id: gemma-3n-4b
+  id: google/gemma-3n-e4b-it:free
   max_context_length: 8000
+- name: AllenAI Molmo2 8b
+  id: allenai/molmo-2-8b:free
+  max_context_length: 37000
 - name: Kimi K2 0711
-  id: kimi-k2-0711
+  id: moonshotai/kimi-k2:free
   max_context_length: 33000

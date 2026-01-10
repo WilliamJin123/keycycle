@@ -1,0 +1,4 @@
+default:
+  requests_per_minute: 20
+  requests_per_hour: 50
+  requests_per_day: 50

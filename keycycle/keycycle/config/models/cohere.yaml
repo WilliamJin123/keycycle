@@ -1,0 +1,14 @@
+free:
+  requests_per_minute: 20
+  requests_per_hour: 1200
+  requests_per_day: 72000
+
+pro:
+  requests_per_minute: 500
+  requests_per_hour: 30000
+  requests_per_day: 1440000
+
+enterprise:
+  requests_per_minute: 1000
+  requests_per_hour: 60000
+  requests_per_day: 2880000
