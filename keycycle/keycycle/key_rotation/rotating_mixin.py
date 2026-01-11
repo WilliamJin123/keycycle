@@ -13,6 +13,7 @@ class RotatingCredentialsMixin:
     def __init__(
         self, 
         *args, 
+        model_id: str,
         wrapper=None, 
         rotating_wait=True, 
         rotating_timeout=10.0, 
@@ -32,6 +33,7 @@ class RotatingCredentialsMixin:
         """
         self.logger = logger or default_logger
         self.wrapper = wrapper
+        self.model_id = model_id
         self._rotating_wait = rotating_wait
         self._rotating_timeout = rotating_timeout
         self._estimated_tokens = rotating_estimated_tokens
@@ -68,7 +70,7 @@ class RotatingCredentialsMixin:
 
     def _rotate_credentials(self) -> KeyUsage:
         key_usage: KeyUsage = self.wrapper.get_key_usage(
-            model_id=self.id,
+            model_id=self.model_id,
             estimated_tokens=self._estimated_tokens,
             wait=self._rotating_wait,
             timeout=self._rotating_timeout
@@ -109,7 +111,7 @@ class RotatingCredentialsMixin:
 
         self.wrapper.manager.record_usage(
             key_obj=key_obj,
-            model_id=self.id,
+            model_id=self.model_id,
             actual_tokens=actual_tokens,
             estimated_tokens=self._estimated_tokens
         )
@@ -126,7 +128,7 @@ class RotatingCredentialsMixin:
                 return response
             except Exception as e:
                 if self._is_rate_limit_error(e) and attempt < limit:
-                    self.logger.warning("429 Hit on key %s (Sync). Rotating and retrying (%d/%d).", self.api_key[-8:], attempt + 1, limit)
+                    self.logger.warning("429 Hit on key %s (Sync) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit,)
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
@@ -144,7 +146,7 @@ class RotatingCredentialsMixin:
             except Exception as e:
                 if self._is_rate_limit_error(e) and attempt < limit:
                     # print(f" 429 Hit on key ...{self.api_key[-8:]} (Async). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Async). Rotating and retrying (%d/%d).", self.api_key[-8:], attempt + 1, limit)
+                    self.logger.warning("429 Hit on key %s (Async) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
@@ -174,7 +176,7 @@ class RotatingCredentialsMixin:
             except Exception as e:
                 if self._is_rate_limit_error(e) and attempt < limit:
                     # print(f" 429 Hit on key ...{self.api_key[-8:]} (Sync Stream). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Sync Stream). Rotating and retrying (%d/%d).", self.api_key[-8:], attempt + 1, limit)
+                    self.logger.warning("429 Hit on key %s (Sync Stream) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
@@ -206,7 +208,7 @@ class RotatingCredentialsMixin:
             except Exception as e:
                 if self._is_rate_limit_error(e) and attempt < limit:
                     # print(f" 429 Hit on key ...{self.api_key[-8:]} (Async Stream). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Async Stream). Rotating and retrying (%d/%d).", self.api_key[-8:], attempt + 1, limit)
+                    self.logger.warning("429 Hit on key %s (Async Stream) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue

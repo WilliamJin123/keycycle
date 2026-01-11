@@ -224,6 +224,7 @@ class MultiProviderWrapper:
 
         model_instance = RotatingProviderClass(
             api_key=initial_key_usage.api_key,
+            model_id = model_id,
             wrapper=self,
             rotating_wait=wait,
             rotating_timeout=timeout,

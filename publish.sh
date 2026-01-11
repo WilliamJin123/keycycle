@@ -45,5 +45,7 @@ else
     exit 1
 fi
 
-cd..
+cd ..
+echo "--- Refreshing local installation ---"
+uv pip install --refresh -U keycycle
 echo "--- Done! ---"

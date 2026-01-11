@@ -48,4 +48,6 @@ if (Test-Path dist) {
     exit 1
 }
 Set-Location -Path $PSScriptRoot
+Write-Host "--- Refreshing local installation ---" -ForegroundColor Yellow
+uv pip install --refresh -U keycycle
 Write-Host "--- Done! ---" -ForegroundColor Green

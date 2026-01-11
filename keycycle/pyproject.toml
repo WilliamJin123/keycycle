@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keycycle"
-version = "0.1.7"
+version = "0.1.8"
 authors = [
   { name="William Jin", email="jinwilliam.jin@gmail.com" },
 ]
@@ -36,4 +36,7 @@ all = ["openai", "agno", "cohere", "cerebras-cloud-sdk", "groq", "openrouter"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["keycycle*"]  
+include = ["keycycle*"]
+
+[tool.setuptools.package-data]
+keycycle = ["config/models/*.yaml"]  

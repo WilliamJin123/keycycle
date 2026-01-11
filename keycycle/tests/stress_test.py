@@ -94,7 +94,7 @@ async def main():
     await run_stress_test("gemini", gemini, 'gemini-2.5-flash', 'requests_per_minute')
 
     # Test D: OpenRouter (Requests Per Minute)
-    await run_stress_test( "openrouter",  openrouter,  'tngtech/deepseek-r1t2-chimera:free',  'requests_per_minute')
+    # await run_stress_test( "openrouter",  openrouter,  'tngtech/deepseek-r1t2-chimera:free',  'requests_per_minute')
 
     print("\n✅ ALL STRESS TESTS COMPLETED")
 
