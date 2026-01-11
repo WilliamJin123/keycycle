@@ -4,7 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_PATH = str(PROJECT_ROOT / ".env")
+ENV_PATH = PROJECT_ROOT / "local.env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 from agno.agent import Agent
@@ -19,6 +19,7 @@ def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
     fail = []
     for i in range(1, num + 1):
         key_env = f"{prefix}_API_KEY_{i}"
+        print("CALLING WITH KEY:", key_env)
         key = os.getenv(key_env)
         if not key:
             fail.append(key_env)
@@ -34,7 +35,7 @@ def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
     input("Press Enter to continue...")
 
 # test_provider_keys("GROQ", Groq, "llama-3.3-70b-versatile")
-# test_provider_keys("CEREBRAS", Cerebras, "zai-glm-4.6")
+test_provider_keys("CEREBRAS", Cerebras, "llama-3.3-70b")
 # test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
-test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free")
+# test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free")
 
