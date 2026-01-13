@@ -105,6 +105,19 @@ class RotatingKeyManager:
                     return key
             return None
     
+    def get_specific_key(self, identifier: Union[int, str], model_id: str, estimated_tokens: int = 1000) -> Optional[KeyUsage]:
+        """
+        Get a specific key by index or identifier.
+        Note: This does NOT check rate limits implicitly to allow 'hard' retrieval,
+        but it DOES reserve the estimated tokens to keep tracking accurate.
+        """
+        with self.lock:
+            key, _ = self._find_key(identifier)
+            if key:
+                key.reserve(model_id, estimated_tokens)
+                return key
+            return None
+
     def record_usage(self, key_obj: KeyUsage, model_id: str,actual_tokens: int, estimated_tokens: int = 1000):
         """Record usage for a specific API key"""
         with self.lock:

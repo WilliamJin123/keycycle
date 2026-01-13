@@ -126,12 +126,30 @@ class MultiProviderWrapper:
         model_id: str = None, 
         estimated_tokens: int = 1000, 
         wait: bool = True, 
-        timeout: float = 10
+        timeout: float = 10,
+        key_id: Union[int, str] = None
     ):
-        """Finds the first valid key"""
+        """
+        Finds the first valid key, or a specific key if key_id is provided.
+        
+        Args:
+            model_id: Model identifier
+            estimated_tokens: Estimated token usage
+            wait: Whether to wait for a key if none available (ignored if key_id is set)
+            timeout: Max wait time
+            key_id: Optional index (int) or suffix/key (str) to force a specific key
+        """
         mid = model_id or self.default_model_id
-        limits = self._resolve_limits(mid)
+        
+        # Specific Key Request (Bypass Rotation Logic)
+        if key_id is not None:
+            key_usage = self.manager.get_specific_key(key_id, mid, estimated_tokens)
+            if not key_usage:
+                raise ValueError(f"Key with identifier '{key_id}' not found.")
+            return key_usage
 
+        # Standard Rotation Logic
+        limits = self._resolve_limits(mid)
         start = time.time()
         while True:
             key_usage = self.manager.get_key(mid, limits, estimated_tokens)
@@ -196,7 +214,9 @@ class MultiProviderWrapper:
         estimated_tokens: int = 1000, 
         wait: bool = True, 
         timeout: float = 10, 
-        max_retries: int = 5, 
+        max_retries: int = 5,
+        key_id: Union[int, str] = None,
+        pin_key: bool = False,      
         **kwargs
     ):
         """Dynamically creates a rotating model for ANY provider."""
@@ -213,14 +233,21 @@ class MultiProviderWrapper:
                 {}
             )
         RotatingProviderClass = self._RotatingClass
-        # Get Initial Key
+
         model_id = kwargs.get('id', self.default_model_id)  
         final_kwargs = {**self.model_kwargs, **kwargs}
         if 'id' not in final_kwargs:
             final_kwargs['id'] = model_id
 
-        initial_key_usage = self.get_key_usage(model_id, estimated_tokens, wait=wait, timeout=timeout)
+        initial_key_usage = self.get_key_usage(
+            model_id=model_id, 
+            estimated_tokens=estimated_tokens, 
+            wait=wait, 
+            timeout=timeout,
+            key_id=key_id 
+        )
         
+        fixed_key_id = key_id if pin_key else None
 
         model_instance = RotatingProviderClass(
             api_key=initial_key_usage.api_key,
@@ -230,6 +257,7 @@ class MultiProviderWrapper:
             rotating_timeout=timeout,
             rotating_estimated_tokens=estimated_tokens,
             rotating_max_retries=max_retries,
+            rotating_fixed_key_id=fixed_key_id,
             **final_kwargs
         )
 
@@ -260,7 +288,8 @@ class MultiProviderWrapper:
         model_id: Optional[str] = None,
         estimated_tokens: int = 1000,
         wait: bool = True,
-        timeout: float = 10
+        timeout: float = 10,
+        key_id: Union[int, str] = None
     ) -> str:
         """
         Get a valid API key for direct use (e.g., embeddings, custom endpoints).
@@ -270,6 +299,7 @@ class MultiProviderWrapper:
             estimated_tokens: Estimated tokens for this request
             wait: Whether to wait for an available key
             timeout: Maximum time to wait for a key
+            key_id: Optional index (int) or suffix/key (str) to force a specific key
             
         Returns:
             A valid API key string
@@ -282,7 +312,7 @@ class MultiProviderWrapper:
             >>> co = cohere.Client(api_key)
             >>> response = co.embed(texts=["hello"], model="embed-english-v3.0")
         """
-        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout)
+        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout, key_id=key_id)
         return key_usage.api_key
 
     def get_api_key_with_context(
@@ -290,7 +320,8 @@ class MultiProviderWrapper:
         model_id: Optional[str] = None,
         estimated_tokens: int = 1000,
         wait: bool = True,
-        timeout: float = 10
+        timeout: float = 10,
+        key_id: Union[int, str] = None
     ) -> tuple[str, KeyUsage]:
         """
         Get an API key along with its usage context for manual tracking.
@@ -301,11 +332,12 @@ class MultiProviderWrapper:
             estimated_tokens: Estimated tokens for this request
             wait: Whether to wait for an available key
             timeout: Maximum time to wait
+            key_id: Optional index (int) or suffix/key (str) to force a specific key
             
         Returns:
             Tuple of (api_key: str, key_usage_obj: KeyUsage)
         """
-        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout)
+        key_usage = self.get_key_usage(model_id, estimated_tokens, wait, timeout, key_id=key_id)
         return key_usage.api_key, key_usage
 
     def record_key_usage(

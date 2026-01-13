@@ -1,6 +1,6 @@
 import functools
 import logging
-from typing import AsyncIterator, Iterator, Optional
+from typing import AsyncIterator, Iterator, Optional, Union
 from ..config.dataclasses import KeyUsage
 from ..config.log_config import default_logger
 from agno.models.response import ModelResponse
@@ -19,6 +19,7 @@ class RotatingCredentialsMixin:
         rotating_timeout=10.0, 
         rotating_estimated_tokens=1000,
         rotating_max_retries=5, 
+        rotating_fixed_key_id: Union[int, str] = None,
         logger = None,
         **kwargs):
         """
@@ -38,6 +39,7 @@ class RotatingCredentialsMixin:
         self._rotating_timeout = rotating_timeout
         self._estimated_tokens = rotating_estimated_tokens
         self._max_retries = rotating_max_retries
+        self._fixed_key_id = rotating_fixed_key_id
 
         super().__init__(*args, **kwargs)
 
@@ -73,7 +75,8 @@ class RotatingCredentialsMixin:
             model_id=self.model_id,
             estimated_tokens=self._estimated_tokens,
             wait=self._rotating_wait,
-            timeout=self._rotating_timeout
+            timeout=self._rotating_timeout,
+            key_id=self._fixed_key_id
         )
         self.api_key = key_usage.api_key
         
