@@ -86,9 +86,20 @@ class RotatingCredentialsMixin:
     def _is_rate_limit_error(self, e: Exception) -> bool:
         """Heuristic to detect rate limits across different providers"""
         err_str = str(e).lower()
-        return any(indicator in err_str for indicator in 
-                   ["429", "too many requests", "rate limit", "resource exhausted"])
+        flagged_strs = ["429", "too many requests", "rate limit", "resource exhausted", "traffic", "rate-limited"]
+        if any(i in err_str for i in 
+                   flagged_strs):
+            return True
 
+        if hasattr(e, "status_code") and e.status_code == 429:
+            return True
+        body = getattr(e, "body", None) or getattr(e, "response", None)
+        if body:
+            body_str = str(body).lower()
+            if any(i in body_str for i in flagged_strs):
+                return True
+        return False
+    
     def _get_retry_limit(self):
         return min(self._max_retries, len(self.wrapper.manager.keys) - 1)
 

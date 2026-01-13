@@ -12,6 +12,7 @@ from agno.models.groq import Groq
 from agno.models.cerebras import Cerebras
 from agno.models.google.gemini import Gemini
 from agno.models.openrouter import OpenRouter
+from agno.utils.pprint import pprint_run_response
 
 def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
     num = int(os.getenv(f"NUM_{prefix}", 0))
@@ -26,7 +27,10 @@ def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
             continue
         try:
             agent = Agent(model=provider_class(id=model_id, api_key=key), markdown=True)
-            agent.print_response(prompt)
+            r = agent.run(prompt)
+            pprint_run_response(r)
+            if "429" in str(r) or "quota" in str(r).lower():
+                raise Exception("Rate limit or quota exceeded")
             success.append(key_env)
         except Exception:
             fail.append(key_env)
@@ -35,7 +39,7 @@ def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
     input("Press Enter to continue...")
 
 # test_provider_keys("GROQ", Groq, "llama-3.3-70b-versatile")
-test_provider_keys("CEREBRAS", Cerebras, "llama-3.3-70b")
-# test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
+# test_provider_keys("CEREBRAS", Cerebras, "llama-3.3-70b")
+test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
 # test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free")
 

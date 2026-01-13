@@ -80,11 +80,23 @@ class BaseRotatingClient:
         if self.base_url:
             self.client_kwargs['base_url'] = self.base_url
 
-    def _is_rate_limit(self, e: Exception) -> bool:
+    def _is_rate_limit_error(self, e: Exception) -> bool:
         if isinstance(e, RateLimitError):
             return True
         err_str = str(e).lower()
-        return "429" in err_str or "too many requests" in err_str or "rate limit" in err_str or "resource exhausted" in err_str
+        flagged_strs = ["429", "too many requests", "rate limit", "resource exhausted", "traffic", "rate-limited"]
+        if any(i in err_str for i in 
+                   flagged_strs):
+            return True
+
+        if hasattr(e, "status_code") and e.status_code == 429:
+            return True
+        body = getattr(e, "body", None) or getattr(e, "response", None)
+        if body:
+            body_str = str(body).lower()
+            if any(i in body_str for i in flagged_strs):
+                return True
+        return False
 
     def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int):
         self.manager.record_usage(
@@ -138,7 +150,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
                 return result
 
             except Exception as e:
-                if self._is_rate_limit(e) and attempt < self.max_retries:
+                if self._is_rate_limit_error(e) and attempt < self.max_retries:
                     logger.warning(f"429/RateLimit hit for {model_id} on key ...{key_usage.api_key[-8:]}. Rotating. (Attempt {attempt + 1}/{self.max_retries + 1})")
                     key_usage.trigger_cooldown()
                     self.manager.force_rotate_index()
@@ -155,7 +167,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
                     accumulated_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if self._is_rate_limit(e):
+            if self._is_rate_limit_error(e):
                 logger.warning(f"Rate limit hit during streaming for {model_id} on key ...{key_usage.api_key[-8:]}.")
                 key_usage.trigger_cooldown()
                 self.manager.force_rotate_index()
@@ -217,7 +229,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                 return result
 
             except Exception as e:
-                if self._is_rate_limit(e) and attempt < self.max_retries:
+                if self._is_rate_limit_error(e) and attempt < self.max_retries:
                     logger.warning(f"429/RateLimit hit for {model_id} on key ...{key_usage.api_key[-8:]}. Rotating. (Attempt {attempt + 1}/{self.max_retries + 1})")
                     key_usage.trigger_cooldown()
                     self.manager.force_rotate_index()
@@ -234,7 +246,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                     accumulated_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if self._is_rate_limit(e):
+            if self._is_rate_limit_error(e):
                 logger.warning(f"Rate limit hit during streaming for {model_id} on key ...{key_usage.api_key[-8:]}.")
                 key_usage.trigger_cooldown()
                 self.manager.force_rotate_index()
