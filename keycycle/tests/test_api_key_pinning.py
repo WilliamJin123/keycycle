@@ -82,9 +82,9 @@ def test_get_model_with_pinning(mock_wrapper):
     
     # Verify that the Mixin would use this ID if it tried to rotate
     # (Simulating what the Mixin does internally)
-    next_key = model._get_next_api_key() 
+    next_key = model._rotate_credentials()
     # Since it is pinned to index 1, next_key should still be Key 2
-    assert next_key == "sk-key-2-beta"
+    assert next_key.api_key == "sk-key-2-beta"
 
 def test_get_model_without_pinning(mock_wrapper):
     """
