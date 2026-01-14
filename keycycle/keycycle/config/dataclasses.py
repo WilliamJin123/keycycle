@@ -1,5 +1,9 @@
 from typing import Dict, List, Optional
 from .enums import RateLimitStrategy
+from .constants import (
+    SECONDS_PER_MINUTE, SECONDS_PER_HOUR, SECONDS_PER_DAY,
+    DEFAULT_COOLDOWN_SECONDS
+)
 import time
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
@@ -70,10 +74,10 @@ class UsageBucket:
     
     pending_tokens: int = 0
     
-    def clean(self):
+    def clean(self) -> None:
         """Clean old entries based on current time"""
         now = time.time()
-        cutoffs = (now - 60, now - 3600, now - 86400)
+        cutoffs = (now - SECONDS_PER_MINUTE, now - SECONDS_PER_HOUR, now - SECONDS_PER_DAY)
         
         for d, cut in zip(
             [self.requests_minute, self.requests_hour, self.requests_day], cutoffs
@@ -180,9 +184,10 @@ class KeyUsage:
             self.global_bucket.commit(actual_tokens, reserved_tokens, ts)
 
 
-    def is_cooling_down(self, cooldown_seconds: int = 30) -> bool:
-        """Returns True if the key is still in its 30s penalty box."""
-        if self.last_429 == 0: return False
+    def is_cooling_down(self, cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS) -> bool:
+        """Returns True if the key is still in its cooldown penalty period."""
+        if self.last_429 == 0:
+            return False
         return (time.time() - self.last_429) < cooldown_seconds
 
     def trigger_cooldown(self):

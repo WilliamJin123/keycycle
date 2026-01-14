@@ -1,47 +1,29 @@
-import os
-from .dataclasses import RateLimits
-from .enums import RateLimitStrategy
-from typing import Any, TypedDict
-from .loader import load_rate_limits_from_yaml, load_openrouter_models
+"""Timing constants for key rotation and rate limiting."""
 
-# Get directory of this file
-CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(CONFIG_DIR, 'models')
+# Time windows (in seconds)
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_DAY = 86400
 
-class ModelDict(TypedDict):
-    """All the provider currrently supported"""
-    cerebras: Any
-    groq: Any
-    gemini: Any
-    openrouter: Any
-    cohere: Any
+# Cooldown configuration
+DEFAULT_COOLDOWN_SECONDS = 30
 
-PROVIDER_STRATEGIES: ModelDict = {
-    'cerebras': RateLimitStrategy.PER_MODEL,
-    'groq': RateLimitStrategy.PER_MODEL,
-    'gemini': RateLimitStrategy.PER_MODEL,
-    'openrouter': RateLimitStrategy.GLOBAL,
-    'cohere': RateLimitStrategy.PER_MODEL
-}
+# Cleanup intervals
+CLEANUP_INTERVAL_SECONDS = 55
 
-# Load Cohere tiers first to handle the env var logic
-_cohere_tiers = load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'cohere.yaml'))
+# Key wait/polling configuration
+DEFAULT_POLL_INTERVAL = 0.5
+MIN_POLL_INTERVAL = 0.1
+MAX_POLL_INTERVAL = 5.0
 
-COHERE_TIERS = {
-    'free': _cohere_tiers['free'],
-    'pro': _cohere_tiers['pro'],
-    'enterprise': _cohere_tiers['enterprise'],
-}
+# History lookback
+HISTORY_LOOKBACK_SECONDS = 86400  # 24 hours
 
-MODEL_LIMITS: ModelDict = {
-    'cerebras': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'cerebras.yaml')),
-    'groq': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'groq.yaml')),
-    'gemini': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'gemini.yaml')),
-    'openrouter': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'openrouter.yaml')),
-    'cohere':{
-        # Same for every model
-        'default': COHERE_TIERS.get(os.getenv('COHERE_TIER', 'free').lower(), COHERE_TIERS['free'])
-    }
-}
+# API key suffix length for logging
+KEY_SUFFIX_LENGTH = 8
 
-OPENROUTER_MODELS = load_openrouter_models(os.path.join(MODELS_DIR, 'openrouter_models.yaml'))
+# Temporary rate limit retry configuration
+TEMP_RATE_LIMIT_MAX_RETRIES = 3
+TEMP_RATE_LIMIT_INITIAL_DELAY = 1.0  # seconds
+TEMP_RATE_LIMIT_MAX_DELAY = 10.0  # seconds
+TEMP_RATE_LIMIT_MULTIPLIER = 2.0

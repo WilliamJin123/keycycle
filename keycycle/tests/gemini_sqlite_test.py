@@ -16,7 +16,7 @@ async def test_gemini_sqlite():
     print(f"--- Starting Gemini SQLite Test ---")
     
     # 1. Setup SQLite DB Path
-    db_path = Path("./test_usage_gemini.db")
+    db_path = Path(__file__).parent / "test_usage_gemini.db"
     db_url = f"sqlite:///{db_path}"
     
     # Ensure clean state

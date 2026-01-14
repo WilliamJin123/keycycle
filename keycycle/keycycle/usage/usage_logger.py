@@ -5,6 +5,7 @@ import time
 
 from .db_logic import UsageDatabase
 from ..config.log_config import default_logger
+from ..core.utils import get_key_suffix
 
 # --- ASYNC LOGGER ---
 class AsyncUsageLogger:
@@ -31,7 +32,7 @@ class AsyncUsageLogger:
                 record = self.queue.get(timeout=1.0)
                 # Parse record for batch formatting
                 provider, model, full_key, ts, tokens = record
-                suffix = full_key[-8:] if len(full_key) > 8 else full_key
+                suffix = get_key_suffix(full_key)
                 batch.append({
                     "provider": provider,
                     "model": model,
@@ -45,7 +46,7 @@ class AsyncUsageLogger:
                     try:
                         r = self.queue.get_nowait()
                         p, m, k, t, tok = r
-                        s = k[-8:] if len(k) > 8 else k
+                        s = get_key_suffix(k)
                         batch.append({
                             "provider": p,
                             "model": m,

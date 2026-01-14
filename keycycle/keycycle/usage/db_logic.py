@@ -7,6 +7,9 @@ from sqlalchemy import (
     URL
 )
 
+from ..core.utils import get_key_suffix
+from ..config.constants import SECONDS_PER_DAY
+
 
 # --- DATABASE LAYER ---
 
@@ -42,7 +45,7 @@ class UsageDatabase:
 
     def load_history(self, provider: str, api_key: str, seconds_lookback: int) -> List[tuple[str, float, int]]:
         """Load history SPECIFIC to this Provider + Model combination"""
-        suffix = api_key[-8:] if len(api_key) > 8 else api_key
+        suffix = get_key_suffix(api_key)
         cutoff = time.time() - seconds_lookback
 
         stmt = (
@@ -84,9 +87,9 @@ class UsageDatabase:
         with self.engine.connect() as conn:
             return conn.execute(stmt).all()
 
-    def prune_old_records(self, days_retention: int = 3):
+    def prune_old_records(self, days_retention: int = 3) -> None:
         """Delete records older than retention period to keep DB small (3 days)"""
-        cutoff = time.time() - (days_retention * 86400)
+        cutoff = time.time() - (days_retention * SECONDS_PER_DAY)
         with self.engine.connect() as conn:
             conn.execute(
                 delete(self.usage_logs).where(

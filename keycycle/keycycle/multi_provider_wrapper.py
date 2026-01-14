@@ -2,7 +2,8 @@ import os
 import time
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Union
+from threading import RLock
+from typing import Any, List, Optional, Tuple, Union
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -16,7 +17,11 @@ from .key_rotation.rotation_manager import RotatingKeyManager
 from .key_rotation.rotating_mixin import RotatingCredentialsMixin
 from .config.dataclasses import KeyUsage, RateLimits, UsageSnapshot
 from .config.enums import RateLimitStrategy
-from .config.constants import MODEL_LIMITS, PROVIDER_STRATEGIES
+from .config.models import MODEL_LIMITS, PROVIDER_STRATEGIES
+from .config.constants import DEFAULT_COOLDOWN_SECONDS
+from .core.utils import validate_api_key
+from .core.exceptions import NoAvailableKeyError, KeyNotFoundError
+from .core.backoff import ExponentialBackoff, BackoffConfig
 from .usage.db_logic import UsageDatabase
 from .config.log_config import default_logger
 from .adapters import RotatingOpenAIClient, RotatingAsyncOpenAIClient
@@ -29,12 +34,9 @@ class MultiProviderWrapper:
     
     @staticmethod
     def load_api_keys(provider: str, env_file: Optional[str] = None) -> List[str]:
-        """Load API keys from environment variables"""
+        """Load API keys from environment variables."""
         if env_file:
             env_path = Path(env_file).resolve()
-            # if not env_path.exists():
-                 # print(f"Warning: The provided env_file '{env_path}' does not exist.")
-            #     logger.warning("The provided env_file '%s' does not exist.", env_path)
         else:
             env_path = Path.cwd() / ".env"
         load_dotenv(dotenv_path=env_path, override=True)
@@ -80,14 +82,16 @@ class MultiProviderWrapper:
                    model_class, db_url, db_env_var, debug, logger, **kwargs)
     
     def __init__(
-        self, 
-        provider: str, 
-        api_keys: List[str], 
+        self,
+        provider: str,
+        api_keys: List[str],
         default_model_id: str,
-        model_class: Optional[Any] = None, 
-        db_url: Optional[str] = None, 
+        model_class: Optional[Any] = None,
+        db_url: Optional[str] = None,
         db_env_var: Optional[str] = "TIDB_DB_URL",
-        debug: bool = False, logger = None,
+        debug: bool = False,
+        logger=None,
+        cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         **kwargs
     ):
         self.provider = provider.lower()
@@ -95,26 +99,36 @@ class MultiProviderWrapper:
         self.model_class = model_class
         self.default_model_id = default_model_id
         self.model_kwargs = kwargs
+        self.cooldown_seconds = cooldown_seconds
         self.toggle_debug(debug)
+
+        # Validate API keys
+        for i, key in enumerate(api_keys):
+            if not validate_api_key(key):
+                self.logger.warning("API key #%d appears invalid or is a placeholder", i + 1)
+
         self.db = UsageDatabase(db_url, db_env_var)
         self.strategy = self.PROVIDER_STRATEGIES.get(self.provider, RateLimitStrategy.PER_MODEL)
-        self.manager = RotatingKeyManager(api_keys, self.provider, self.strategy, self.db)
+        self.manager = RotatingKeyManager(
+            api_keys, self.provider, self.strategy, self.db,
+            cooldown_seconds=cooldown_seconds
+        )
         self._model_cache = {}
+        self._model_cache_lock = RLock()  # Thread safety for model cache
         self._RotatingClass = None
         self.console = Console()
 
-    def toggle_debug(self, enable: bool):
+    def toggle_debug(self, enable: bool) -> None:
         """
         Dynamically switches logging verbosity for this module.
         enable=True  -> Shows detailed rotation/reservation logs (DEBUG)
         enable=False -> Shows only key info/warnings (INFO)
         """
         level = logging.DEBUG if enable else logging.INFO
-        # Set the logger for the current file context
         self.logger.setLevel(level)
-        
+
         status = "ENABLED" if enable else "DISABLED"
-        self.logger.info(f"Debug logging {status} for {self.provider}")
+        self.logger.info("Debug logging %s for %s", status, self.provider)
 
     def _resolve_limits(self, model_id: str) -> RateLimits:
         mid = model_id or self.default_model_id
@@ -122,44 +136,66 @@ class MultiProviderWrapper:
         return provider_limits.get(mid, provider_limits.get('default', RateLimits(10, 100, 1000)))
 
     def get_key_usage(
-        self, 
-        model_id: str = None, 
-        estimated_tokens: int = 1000, 
-        wait: bool = True, 
+        self,
+        model_id: str = None,
+        estimated_tokens: int = 1000,
+        wait: bool = True,
         timeout: float = 10,
         key_id: Union[int, str] = None
-    ):
+    ) -> KeyUsage:
         """
         Finds the first valid key, or a specific key if key_id is provided.
-        
+
         Args:
             model_id: Model identifier
             estimated_tokens: Estimated token usage
             wait: Whether to wait for a key if none available (ignored if key_id is set)
             timeout: Max wait time
             key_id: Optional index (int) or suffix/key (str) to force a specific key
+
+        Returns:
+            KeyUsage object for the selected key
+
+        Raises:
+            KeyNotFoundError: If key_id is specified but not found
+            NoAvailableKeyError: If no keys are available within timeout
         """
         mid = model_id or self.default_model_id
-        
+
         # Specific Key Request (Bypass Rotation Logic)
         if key_id is not None:
             key_usage = self.manager.get_specific_key(key_id, mid, estimated_tokens)
             if not key_usage:
-                raise ValueError(f"Key with identifier '{key_id}' not found.")
+                raise KeyNotFoundError(key_id)
             return key_usage
 
-        # Standard Rotation Logic
+        # Standard Rotation Logic with Exponential Backoff
         limits = self._resolve_limits(mid)
         start = time.time()
+        backoff = ExponentialBackoff(BackoffConfig(
+            initial_interval=0.5,
+            max_interval=2.0,  # Cap at 2 seconds for key polling
+            multiplier=1.5
+        ))
+
         while True:
             key_usage = self.manager.get_key(mid, limits, estimated_tokens)
-            if key_usage: 
+            if key_usage:
                 return key_usage
             if not wait:
-                    raise RuntimeError(f"No available API keys for {self.provider}/{mid} (wait=False)") 
+                raise NoAvailableKeyError(
+                    self.provider, mid, wait=False, timeout=timeout,
+                    total_keys=len(self.manager.keys)
+                )
             if time.time() - start > timeout:
-                raise RuntimeError(f"Timeout: No available API keys for {self.provider}/{mid} after {timeout}s")
-            time.sleep(0.5)
+                # Count cooling down keys for better error message
+                cooling_down = sum(1 for k in self.manager.keys if k.is_cooling_down(self.cooldown_seconds))
+                raise NoAvailableKeyError(
+                    self.provider, mid, wait=True, timeout=timeout,
+                    total_keys=len(self.manager.keys),
+                    cooling_down=cooling_down
+                )
+            backoff.wait()
 
     def get_openai_client(
         self, 
@@ -210,13 +246,13 @@ class MultiProviderWrapper:
         )
 
     def get_model(
-        self, 
-        estimated_tokens: int = 1000, 
-        wait: bool = True, 
-        timeout: float = 10, 
+        self,
+        estimated_tokens: int = 1000,
+        wait: bool = True,
+        timeout: float = 10,
         max_retries: int = 5,
         key_id: Union[int, str] = None,
-        pin_key: bool = False,      
+        pin_key: bool = False,
         **kwargs
     ):
         """Dynamically creates a rotating model for ANY provider."""
@@ -226,32 +262,34 @@ class MultiProviderWrapper:
                 "Ensure 'agno' is installed and that the provider is supported."
             )
 
-        if self._RotatingClass is None:
-            self._RotatingClass = type(
-                f"Rotating{self.model_class.__name__}",
-                (RotatingCredentialsMixin, self.model_class),
-                {}
-            )
+        # Thread-safe creation of rotating class
+        with self._model_cache_lock:
+            if self._RotatingClass is None:
+                self._RotatingClass = type(
+                    f"Rotating{self.model_class.__name__}",
+                    (RotatingCredentialsMixin, self.model_class),
+                    {}
+                )
         RotatingProviderClass = self._RotatingClass
 
-        model_id = kwargs.get('id', self.default_model_id)  
+        model_id = kwargs.get('id', self.default_model_id)
         final_kwargs = {**self.model_kwargs, **kwargs}
         if 'id' not in final_kwargs:
             final_kwargs['id'] = model_id
 
         initial_key_usage = self.get_key_usage(
-            model_id=model_id, 
-            estimated_tokens=estimated_tokens, 
-            wait=wait, 
+            model_id=model_id,
+            estimated_tokens=estimated_tokens,
+            wait=wait,
             timeout=timeout,
-            key_id=key_id 
+            key_id=key_id
         )
-        
+
         fixed_key_id = key_id if pin_key else None
 
         model_instance = RotatingProviderClass(
             api_key=initial_key_usage.api_key,
-            model_id = model_id,
+            model_id=model_id,
             wrapper=self,
             rotating_wait=wait,
             rotating_timeout=timeout,
@@ -261,26 +299,6 @@ class MultiProviderWrapper:
             **final_kwargs
         )
 
-        # orig_metrics = getattr(model_instance, "_get_metrics", None)
-        # def metrics_hook(*args, **kwargs):
-        #     if orig_metrics:
-        #         m = orig_metrics(*args, **kwargs)
-        #     else:
-        #         m = None
-        #     actual = 0
-        #     if m and hasattr(m, 'total_tokens') and m.total_tokens is not None:
-        #         actual = m.total_tokens
-        #     # Retrieve the estimate we set on the instance earlier
-        #     estimate = getattr(model_instance, "_estimated_tokens", 1000)
-        #     self.manager.record_usage(
-        #         key_obj=initial_key_usage,
-        #         model_id=model_id, 
-        #         actual_tokens=actual, 
-        #         estimated_tokens=estimate
-        #     )
-        #     return m
-        
-        # model_instance._get_metrics = metrics_hook
         return model_instance
 
     def get_api_key(
@@ -322,7 +340,7 @@ class MultiProviderWrapper:
         wait: bool = True,
         timeout: float = 10,
         key_id: Union[int, str] = None
-    ) -> tuple[str, KeyUsage]:
+    ) -> Tuple[str, KeyUsage]:
         """
         Get an API key along with its usage context for manual tracking.
         This gives you both the key and the key_usage object for more control.
@@ -346,7 +364,7 @@ class MultiProviderWrapper:
         model_id: Optional[str] = None,
         actual_tokens: int = 0,
         estimated_tokens: int = 1000
-    ):
+    ) -> None:
         """
         Record usage for a key obtained via get_api_key().
         Call this after you're done using the key to update usage tracking.
@@ -373,7 +391,7 @@ class MultiProviderWrapper:
 
     # --- PRINTING HELPERS ---
     
-    def _create_usage_table(self, title: str, data: List[tuple[str, UsageSnapshot]]) -> Table:
+    def _create_usage_table(self, title: str, data: List[Tuple[str, UsageSnapshot]]) -> Table:
         """
         Generates a standardized table for usage stats.
         data format: [(Label, Snapshot), ...]
@@ -416,7 +434,7 @@ class MultiProviderWrapper:
             )
         return table
 
-    def print_global_stats(self):
+    def print_global_stats(self) -> None:
         stats = self.manager.get_global_stats()
         
         # 1. Prepare Data for the Table
@@ -449,7 +467,7 @@ class MultiProviderWrapper:
         ))
         self.console.print(table)
 
-    def print_key_stats(self, identifier: Union[int, str]):
+    def print_key_stats(self, identifier: Union[int, str]) -> None:
         stats = self.manager.get_key_stats(identifier)
         if not stats:
             self.console.print(f"[bold red]Key not found:[/][white] {identifier}[/]")
@@ -482,7 +500,7 @@ class MultiProviderWrapper:
             table = self._create_usage_table(title="Breakdown by Model", data=rows)
             self.console.print(table)
 
-    def print_model_stats(self, model_id: str):
+    def print_model_stats(self, model_id: str) -> None:
         data = self.manager.get_model_stats(model_id)
         
         self.console.print()
@@ -504,7 +522,7 @@ class MultiProviderWrapper:
             table = self._create_usage_table(title="Contributing Keys", data=rows)
             self.console.print(table)
 
-    def print_granular_stats(self, identifier: Union[int, str], model_id: str):
+    def print_granular_stats(self, identifier: Union[int, str], model_id: str) -> None:
         data = self.manager.get_granular_stats(identifier, model_id)
         
         if not data:

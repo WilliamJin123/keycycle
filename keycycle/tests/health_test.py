@@ -14,11 +14,18 @@ from agno.models.google.gemini import Gemini
 from agno.models.openrouter import OpenRouter
 from agno.utils.pprint import pprint_run_response
 
-def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
+def test_provider_keys(prefix, 
+    provider_class, 
+    model_id, 
+    prompt="Say Hello.",
+    start = 1,
+    end = None
+):
     num = int(os.getenv(f"NUM_{prefix}", 0))
     success = []
     fail = []
-    for i in range(1, num + 1):
+    end = end if end is not None else num + 1
+    for i in range(start, end):
         key_env = f"{prefix}_API_KEY_{i}"
         print("CALLING WITH KEY:", key_env)
         key = os.getenv(key_env)
@@ -40,6 +47,6 @@ def test_provider_keys(prefix, provider_class, model_id, prompt="Say Hello."):
 
 # test_provider_keys("GROQ", Groq, "llama-3.3-70b-versatile")
 # test_provider_keys("CEREBRAS", Cerebras, "llama-3.3-70b")
-test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
-# test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free")
+# test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
+test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free", start=26)
 

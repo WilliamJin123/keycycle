@@ -1,8 +1,19 @@
+import asyncio
 import functools
 import logging
+import time
 from typing import AsyncIterator, Iterator, Optional, Union
+
 from ..config.dataclasses import KeyUsage
 from ..config.log_config import default_logger
+from ..config.constants import (
+    TEMP_RATE_LIMIT_MAX_RETRIES,
+    TEMP_RATE_LIMIT_INITIAL_DELAY,
+    TEMP_RATE_LIMIT_MAX_DELAY,
+    TEMP_RATE_LIMIT_MULTIPLIER,
+)
+from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
+from ..core.backoff import ExponentialBackoff, BackoffConfig
 from agno.models.response import ModelResponse
 
 class RotatingCredentialsMixin:
@@ -86,24 +97,7 @@ class RotatingCredentialsMixin:
 
         return key_usage
 
-    def _is_rate_limit_error(self, e: Exception) -> bool:
-        """Heuristic to detect rate limits across different providers"""
-        err_str = str(e).lower()
-        flagged_strs = ["429", "too many requests", "rate limit", "resource exhausted", "traffic", "rate-limited"]
-        if any(i in err_str for i in 
-                   flagged_strs):
-            return True
-
-        if hasattr(e, "status_code") and e.status_code == 429:
-            return True
-        body = getattr(e, "body", None) or getattr(e, "response", None)
-        if body:
-            body_str = str(body).lower()
-            if any(i in body_str for i in flagged_strs):
-                return True
-        return False
-    
-    def _get_retry_limit(self):
+    def _get_retry_limit(self) -> int:
         return min(self._max_retries, len(self.wrapper.manager.keys) - 1)
 
     def _record_usage(self, key_obj: KeyUsage, response: Optional[ModelResponse]):
@@ -130,100 +124,216 @@ class RotatingCredentialsMixin:
             estimated_tokens=self._estimated_tokens
         )
 
+    def _create_temp_backoff(self) -> ExponentialBackoff:
+        """Create a backoff instance for temporary rate limit retries."""
+        return ExponentialBackoff(BackoffConfig(
+            initial_interval=TEMP_RATE_LIMIT_INITIAL_DELAY,
+            max_interval=TEMP_RATE_LIMIT_MAX_DELAY,
+            multiplier=TEMP_RATE_LIMIT_MULTIPLIER,
+        ))
 
     def invoke(self, *args, **kwargs) -> ModelResponse:
         limit = self._get_retry_limit()
-        
+
         for attempt in range(limit + 1):
             key_usage = self._rotate_credentials()
-            try:  
-                response = super().invoke(*args, **kwargs)
-                self._record_usage(key_usage, response)
-                return response
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < limit:
-                    self.logger.warning("429 Hit on key %s (Sync) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit,)
+            temp_backoff = self._create_temp_backoff()
+
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    response = super().invoke(*args, **kwargs)
+                    self._record_usage(key_usage, response)
+                    return response
+                except Exception as e:
+                    # Check for temporary rate limit first - retry with SAME key
+                    if is_temporary_rate_limit_error(e) and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES:
+                        delay = temp_backoff.get_next_interval()
+                        self.logger.info(
+                            "Temporary rate limit on key %s [%s]. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        time.sleep(delay)
+                        continue  # Retry with SAME key
+
+                    # Hard rate limit - rotate key
+                    if is_rate_limit_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "429 Hit on key %s (Sync) [%s]. Rotating and retrying (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.trigger_cooldown()
+                        self.wrapper.manager.force_rotate_index()
+                        break  # Break inner loop, continue outer with new key
+                    raise e
+            else:
+                # Temp retries exhausted, move to next key
+                if attempt < limit:
+                    self.logger.warning(
+                        "Temp rate limit retries exhausted for key %s. Rotating.",
+                        get_key_suffix(self.api_key)
+                    )
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
-                raise e
+                raise
 
     async def ainvoke(self, *args, **kwargs) -> ModelResponse:
         limit = self._get_retry_limit()
-        
+
         for attempt in range(limit + 1):
             key_usage = self._rotate_credentials()
-            try:
-                response = await super().ainvoke(*args, **kwargs)
-                self._record_usage(key_usage, response)
-                return response
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < limit:
-                    # print(f" 429 Hit on key ...{self.api_key[-8:]} (Async). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Async) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
+            temp_backoff = self._create_temp_backoff()
+
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    response = await super().ainvoke(*args, **kwargs)
+                    self._record_usage(key_usage, response)
+                    return response
+                except Exception as e:
+                    # Check for temporary rate limit first - retry with SAME key
+                    if is_temporary_rate_limit_error(e) and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES:
+                        delay = temp_backoff.get_next_interval()
+                        self.logger.info(
+                            "Temporary rate limit on key %s [%s]. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        await asyncio.sleep(delay)
+                        continue  # Retry with SAME key
+
+                    # Hard rate limit - rotate key
+                    if is_rate_limit_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "429 Hit on key %s (Async) [%s]. Rotating and retrying (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.trigger_cooldown()
+                        self.wrapper.manager.force_rotate_index()
+                        break  # Break inner loop, continue outer with new key
+                    raise e
+            else:
+                # Temp retries exhausted, move to next key
+                if attempt < limit:
+                    self.logger.warning(
+                        "Temp rate limit retries exhausted for key %s. Rotating.",
+                        get_key_suffix(self.api_key)
+                    )
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
-                raise e
+                raise
     
     def invoke_stream(self, *args, **kwargs) -> Iterator[ModelResponse]:
         limit = self._get_retry_limit()
-        
+
         for attempt in range(limit + 1):
             key_usage = self._rotate_credentials()
-            try:  
-                stream = super().invoke_stream(*args, **kwargs)
-                final_usage = None
-                for chunk in stream:
-                    if chunk.response_usage:
-                        final_usage = chunk.response_usage
-                    yield chunk
-                if final_usage:
-                    dummy_response = ModelResponse()
-                    dummy_response.response_usage = final_usage
-                    self._record_usage(key_usage, dummy_response)
-                else:
-                    # If the stream didn't return usage data, fallback to estimation
-                    self._record_usage(key_usage, None)
-                    
-                return
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < limit:
-                    # print(f" 429 Hit on key ...{self.api_key[-8:]} (Sync Stream). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Sync Stream) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
+            temp_backoff = self._create_temp_backoff()
+
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                chunks_received = False
+                try:
+                    stream = super().invoke_stream(*args, **kwargs)
+                    final_usage = None
+                    for chunk in stream:
+                        chunks_received = True
+                        if chunk.response_usage:
+                            final_usage = chunk.response_usage
+                        yield chunk
+                    if final_usage:
+                        dummy_response = ModelResponse()
+                        dummy_response.response_usage = final_usage
+                        self._record_usage(key_usage, dummy_response)
+                    else:
+                        # If the stream didn't return usage data, fallback to estimation
+                        self._record_usage(key_usage, None)
+
+                    return
+                except Exception as e:
+                    # Only retry temp limits if NO chunks received yet
+                    if (is_temporary_rate_limit_error(e)
+                        and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES
+                        and not chunks_received):
+                        delay = temp_backoff.get_next_interval()
+                        self.logger.info(
+                            "Temporary rate limit on key %s (Stream) [%s]. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        time.sleep(delay)
+                        continue
+
+                    if is_rate_limit_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "429 Hit on key %s (Sync Stream) [%s]. Rotating and retrying (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.trigger_cooldown()
+                        self.wrapper.manager.force_rotate_index()
+                        break
+                    raise e
+            else:
+                if attempt < limit:
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
-                raise e
+                raise
 
     async def ainvoke_stream(self, *args, **kwargs) -> AsyncIterator[ModelResponse]:
         limit = self._get_retry_limit()
-        
+
         for attempt in range(limit + 1):
             key_usage = self._rotate_credentials()
-            try:
-                stream = super().ainvoke_stream(*args, **kwargs)
-                
-                final_usage = None
-                async for chunk in stream:
-                    if chunk.response_usage:
-                        final_usage = chunk.response_usage
-                    yield chunk
-                
-                # Stream completed successfully. Record usage.
-                if final_usage:
-                    dummy_response = ModelResponse()
-                    dummy_response.response_usage = final_usage
-                    self._record_usage(key_usage, dummy_response)
-                else:
-                    self._record_usage(key_usage, None)
-                
-                return
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < limit:
-                    # print(f" 429 Hit on key ...{self.api_key[-8:]} (Async Stream). Rotating and retrying ({attempt+1}/{limit})...")
-                    self.logger.warning("429 Hit on key %s (Async Stream) [%s]. Rotating and retrying (%d/%d).", self.api_key[-8:], self.model_id, attempt + 1, limit)
+            temp_backoff = self._create_temp_backoff()
+
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                chunks_received = False
+                try:
+                    stream = super().ainvoke_stream(*args, **kwargs)
+
+                    final_usage = None
+                    async for chunk in stream:
+                        chunks_received = True
+                        if chunk.response_usage:
+                            final_usage = chunk.response_usage
+                        yield chunk
+
+                    # Stream completed successfully. Record usage.
+                    if final_usage:
+                        dummy_response = ModelResponse()
+                        dummy_response.response_usage = final_usage
+                        self._record_usage(key_usage, dummy_response)
+                    else:
+                        self._record_usage(key_usage, None)
+
+                    return
+                except Exception as e:
+                    # Only retry temp limits if NO chunks received yet
+                    if (is_temporary_rate_limit_error(e)
+                        and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES
+                        and not chunks_received):
+                        delay = temp_backoff.get_next_interval()
+                        self.logger.info(
+                            "Temporary rate limit on key %s (Async Stream) [%s]. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    if is_rate_limit_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "429 Hit on key %s (Async Stream) [%s]. Rotating and retrying (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.trigger_cooldown()
+                        self.wrapper.manager.force_rotate_index()
+                        break
+                    raise e
+            else:
+                if attempt < limit:
                     key_usage.trigger_cooldown()
                     self.wrapper.manager.force_rotate_index()
                     continue
-                raise e
+                raise

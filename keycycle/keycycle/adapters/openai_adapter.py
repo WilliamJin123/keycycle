@@ -1,8 +1,17 @@
+import asyncio
 import logging
 import time
-from typing import List, Any, Optional, Union, Callable, Generator, AsyncGenerator
+from typing import List, Any, Optional, Callable, Generator, AsyncGenerator
 
 from ..config.dataclasses import KeyUsage, RateLimits
+from ..config.constants import (
+    TEMP_RATE_LIMIT_MAX_RETRIES,
+    TEMP_RATE_LIMIT_INITIAL_DELAY,
+    TEMP_RATE_LIMIT_MAX_DELAY,
+    TEMP_RATE_LIMIT_MULTIPLIER,
+)
+from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
+from ..core.backoff import ExponentialBackoff, BackoffConfig
 from ..key_rotation.rotation_manager import RotatingKeyManager
 
 logger = logging.getLogger(__name__)
@@ -14,8 +23,10 @@ try:
 except ImportError:
     HAS_OPENAI = False
     # Generic placeholders
-    OpenAI = object
-    AsyncOpenAI = object
+    class OpenAI:
+        pass
+    class AsyncOpenAI:
+        pass
     RateLimitError = Exception
     APIError = Exception
 
@@ -80,44 +91,26 @@ class BaseRotatingClient:
         if self.base_url:
             self.client_kwargs['base_url'] = self.base_url
 
-    def _is_rate_limit_error(self, e: Exception) -> bool:
-        if isinstance(e, RateLimitError):
-            return True
-        err_str = str(e).lower()
-        flagged_strs = ["429", "too many requests", "rate limit", "resource exhausted", "traffic", "rate-limited"]
-        if any(i in err_str for i in 
-                   flagged_strs):
-            return True
-
-        if hasattr(e, "status_code") and e.status_code == 429:
-            return True
-        body = getattr(e, "body", None) or getattr(e, "response", None)
-        if body:
-            body_str = str(body).lower()
-            if any(i in body_str for i in flagged_strs):
-                return True
-        return False
-
-    def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int):
+    def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int) -> None:
         self.manager.record_usage(
-            key_obj=key_usage, 
-            model_id=model_id, 
-            actual_tokens=actual_tokens, 
+            key_obj=key_usage,
+            model_id=model_id,
+            actual_tokens=actual_tokens,
             estimated_tokens=self.estimated_tokens
         )
-        
+
     def _extract_usage(self, response: Any) -> int:
         try:
             if hasattr(response, 'usage') and response.usage:
                 return response.usage.total_tokens
-        except:
+        except (AttributeError, TypeError):
             pass
         return 0
 
 # --- SYNC IMPLEMENTATION ---
 
 class RotatingOpenAIClient(BaseRotatingClient):
-    def _get_fresh_client(self, api_key: str):
+    def _get_fresh_client(self, api_key: str) -> OpenAI:
         return OpenAI(api_key=api_key, **self.client_kwargs)
 
     def __getattr__(self, name):
@@ -128,36 +121,72 @@ class RotatingOpenAIClient(BaseRotatingClient):
         if 'model' not in kwargs:
             kwargs['model'] = model_id
         limits = self.limit_resolver(model_id)
-        
+
         for attempt in range(self.max_retries + 1):
             key_usage = self.manager.get_key(model_id, limits, self.estimated_tokens)
             if not key_usage:
                 raise RuntimeError(f"No available keys for {model_id}")
 
-            try:
-                real_client = self._get_fresh_client(key_usage.api_key)
-                
-                target = real_client
-                for p in path:
-                    target = getattr(target, p)
-                
-                result = target(*args, **kwargs)
-                
-                if kwargs.get('stream', False):
-                    return self._wrap_stream(result, key_usage, model_id)
-                
-                self._record_usage(key_usage, model_id, self._extract_usage(result))
-                return result
+            # Create backoff for temporary rate limits
+            temp_backoff = ExponentialBackoff(BackoffConfig(
+                initial_interval=TEMP_RATE_LIMIT_INITIAL_DELAY,
+                max_interval=TEMP_RATE_LIMIT_MAX_DELAY,
+                multiplier=TEMP_RATE_LIMIT_MULTIPLIER,
+            ))
 
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < self.max_retries:
-                    logger.warning(f"429/RateLimit hit for {model_id} on key ...{key_usage.api_key[-8:]}. Rotating. (Attempt {attempt + 1}/{self.max_retries + 1})")
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    real_client = self._get_fresh_client(key_usage.api_key)
+
+                    target = real_client
+                    for p in path:
+                        target = getattr(target, p)
+
+                    result = target(*args, **kwargs)
+
+                    if kwargs.get('stream', False):
+                        return self._wrap_stream(result, key_usage, model_id)
+
+                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    return result
+
+                except Exception as e:
+                    # Check for temporary rate limit first - retry with SAME key
+                    if is_temporary_rate_limit_error(e) and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES:
+                        delay = temp_backoff.get_next_interval()
+                        logger.info(
+                            "Temporary rate limit on key ...%s for %s. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(key_usage.api_key), model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        time.sleep(delay)
+                        continue  # Retry with SAME key
+
+                    # Hard rate limit - rotate to next key
+                    if is_rate_limit_error(e) and attempt < self.max_retries:
+                        logger.warning(
+                            "429/RateLimit hit for %s on key ...%s. Rotating. (Attempt %d/%d)",
+                            model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
+                        )
+                        key_usage.trigger_cooldown()
+                        self.manager.force_rotate_index()
+                        time.sleep(0.5)
+                        break  # Break inner loop, continue outer loop with new key
+
+                    self._record_usage(key_usage, model_id, 0)
+                    raise e
+            else:
+                # Inner loop exhausted without success - continue to next key
+                if attempt < self.max_retries:
+                    logger.warning(
+                        "Temporary rate limit retries exhausted for key ...%s. Rotating.",
+                        get_key_suffix(key_usage.api_key)
+                    )
                     key_usage.trigger_cooldown()
                     self.manager.force_rotate_index()
-                    time.sleep(0.5)
                     continue
-                self._record_usage(key_usage, model_id, 0) 
-                raise e
+
+        raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     def _wrap_stream(self, generator: Generator, key_usage: KeyUsage, model_id: str):
         accumulated_tokens = 0
@@ -167,8 +196,11 @@ class RotatingOpenAIClient(BaseRotatingClient):
                     accumulated_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if self._is_rate_limit_error(e):
-                logger.warning(f"Rate limit hit during streaming for {model_id} on key ...{key_usage.api_key[-8:]}.")
+            if is_rate_limit_error(e):
+                logger.warning(
+                    "Rate limit hit during streaming for %s on key ...%s.",
+                    model_id, get_key_suffix(key_usage.api_key)
+                )
                 key_usage.trigger_cooldown()
                 self.manager.force_rotate_index()
             raise
@@ -190,7 +222,7 @@ class SyncProxyHelper:
 # --- ASYNC IMPLEMENTATION ---
 
 class RotatingAsyncOpenAIClient(BaseRotatingClient):
-    def _get_fresh_client(self, api_key: str):
+    def _get_fresh_client(self, api_key: str) -> AsyncOpenAI:
         return AsyncOpenAI(api_key=api_key, **self.client_kwargs)
 
     def __getattr__(self, name):
@@ -201,10 +233,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
         if 'model' not in kwargs:
             kwargs['model'] = model_id
         limits = self.limit_resolver(model_id)
-        
-        if kwargs.get('stream', False) and 'stream_options' not in kwargs:
-            kwargs['stream_options'] = {"include_usage": True}
-        
+
         if kwargs.get('stream', False) and 'stream_options' not in kwargs:
             kwargs['stream_options'] = {"include_usage": True}
 
@@ -213,30 +242,66 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
             if not key_usage:
                 raise RuntimeError(f"No available keys for {model_id}")
 
-            try:
-                real_client = self._get_fresh_client(key_usage.api_key)
-                
-                target = real_client
-                for p in path:
-                    target = getattr(target, p)
-                
-                result = await target(*args, **kwargs)
-                
-                if kwargs.get('stream', False):
-                    return self._wrap_stream(result, key_usage, model_id)
-                
-                self._record_usage(key_usage, model_id, self._extract_usage(result))
-                return result
+            # Create backoff for temporary rate limits
+            temp_backoff = ExponentialBackoff(BackoffConfig(
+                initial_interval=TEMP_RATE_LIMIT_INITIAL_DELAY,
+                max_interval=TEMP_RATE_LIMIT_MAX_DELAY,
+                multiplier=TEMP_RATE_LIMIT_MULTIPLIER,
+            ))
 
-            except Exception as e:
-                if self._is_rate_limit_error(e) and attempt < self.max_retries:
-                    logger.warning(f"429/RateLimit hit for {model_id} on key ...{key_usage.api_key[-8:]}. Rotating. (Attempt {attempt + 1}/{self.max_retries + 1})")
+            for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    real_client = self._get_fresh_client(key_usage.api_key)
+
+                    target = real_client
+                    for p in path:
+                        target = getattr(target, p)
+
+                    result = await target(*args, **kwargs)
+
+                    if kwargs.get('stream', False):
+                        return self._wrap_stream(result, key_usage, model_id)
+
+                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    return result
+
+                except Exception as e:
+                    # Check for temporary rate limit first - retry with SAME key
+                    if is_temporary_rate_limit_error(e) and temp_attempt < TEMP_RATE_LIMIT_MAX_RETRIES:
+                        delay = temp_backoff.get_next_interval()
+                        logger.info(
+                            "Temporary rate limit on key ...%s for %s. Waiting %.1fs (%d/%d).",
+                            get_key_suffix(key_usage.api_key), model_id, delay,
+                            temp_attempt + 1, TEMP_RATE_LIMIT_MAX_RETRIES
+                        )
+                        await asyncio.sleep(delay)
+                        continue  # Retry with SAME key
+
+                    # Hard rate limit - rotate to next key
+                    if is_rate_limit_error(e) and attempt < self.max_retries:
+                        logger.warning(
+                            "429/RateLimit hit for %s on key ...%s. Rotating. (Attempt %d/%d)",
+                            model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
+                        )
+                        key_usage.trigger_cooldown()
+                        self.manager.force_rotate_index()
+                        await asyncio.sleep(0.5)
+                        break  # Break inner loop, continue outer loop with new key
+
+                    self._record_usage(key_usage, model_id, 0)
+                    raise e
+            else:
+                # Inner loop exhausted without success - continue to next key
+                if attempt < self.max_retries:
+                    logger.warning(
+                        "Temporary rate limit retries exhausted for key ...%s. Rotating.",
+                        get_key_suffix(key_usage.api_key)
+                    )
                     key_usage.trigger_cooldown()
                     self.manager.force_rotate_index()
-                    time.sleep(0.5)
                     continue
-                self._record_usage(key_usage, model_id, 0) 
-                raise e
+
+        raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     async def _wrap_stream(self, generator: AsyncGenerator, key_usage: KeyUsage, model_id: str):
         accumulated_tokens = 0
@@ -246,8 +311,11 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                     accumulated_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if self._is_rate_limit_error(e):
-                logger.warning(f"Rate limit hit during streaming for {model_id} on key ...{key_usage.api_key[-8:]}.")
+            if is_rate_limit_error(e):
+                logger.warning(
+                    "Rate limit hit during streaming for %s on key ...%s.",
+                    model_id, get_key_suffix(key_usage.api_key)
+                )
                 key_usage.trigger_cooldown()
                 self.manager.force_rotate_index()
             raise

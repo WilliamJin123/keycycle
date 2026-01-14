@@ -1,8 +1,25 @@
 from .multi_provider_wrapper import RateLimits, MultiProviderWrapper, RotatingAsyncOpenAIClient, RotatingOpenAIClient
+from .core.exceptions import (
+    KeycycleError,
+    NoAvailableKeyError,
+    KeyNotFoundError,
+    InvalidKeyError,
+    RateLimitError,
+    ConfigurationError,
+)
+
 __all__ = [
-    "RateLimits", 
-    "RotatingKeyManager", 
+    # Main classes
+    "RateLimits",
+    "RotatingKeyManager",
     "MultiProviderWrapper",
-    "RotatingAsyncOpenAIClient", 
+    "RotatingAsyncOpenAIClient",
     "RotatingOpenAIClient",
+    # Exceptions
+    "KeycycleError",
+    "NoAvailableKeyError",
+    "KeyNotFoundError",
+    "InvalidKeyError",
+    "RateLimitError",
+    "ConfigurationError",
 ]

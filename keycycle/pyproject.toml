@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keycycle"
-version = "0.1.12"
+version = "0.1.13"
 authors = [
   { name="William Jin", email="jinwilliam.jin@gmail.com" },
 ]
@@ -34,9 +34,88 @@ groq = ["groq"]
 openrouter = ["openrouter"]
 all = ["openai", "agno", "cohere", "cerebras-cloud-sdk", "groq", "openrouter"]
 
+# Test dependencies
+test = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.2.0",
+]
+
+# Development dependencies (includes test + type checking)
+dev = [
+    "keycycle[test]",
+    "mypy>=1.5.0",
+    "types-PyYAML",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["keycycle*"]
 
 [tool.setuptools.package-data]
-keycycle = ["config/models/*.yaml"]  
+keycycle = ["config/models/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+python_classes = ["Test*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "-ra",
+]
+markers = [
+    "integration: marks tests as integration tests (require API keys)",
+    "slow: marks tests as slow running",
+    "unit: marks tests as unit tests (no external dependencies)",
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["keycycle"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/config/models/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+fail_under = 60
+show_missing = true
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "agno.*",
+    "cohere.*",
+    "groq.*",
+    "cerebras.*",
+    "openrouter.*",
+]
+ignore_missing_imports = true  
