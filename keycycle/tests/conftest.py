@@ -16,6 +16,9 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "integration: marks tests requiring real API keys")
     config.addinivalue_line("markers", "unit: marks unit tests without external dependencies")
     config.addinivalue_line("markers", "slow: marks slow-running tests")
+    if LOCAL_ENV_PATH.exists():
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=LOCAL_ENV_PATH, override=True)
 
 
 def pytest_collection_modifyitems(config, items):

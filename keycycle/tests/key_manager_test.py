@@ -56,7 +56,7 @@ class TestKeyManagerIntegration:
             pytest.skip(f"OpenRouter not configured: {e}")
 
     @pytest.mark.integration
-    def test_cerebras_key_rotation(self, cerebras_wrapper):
+    def test_cerebras_key_rotation(self, cerebras_wrapper: MultiProviderWrapper):
         """Test that Cerebras rotates through keys on multiple requests."""
         keys_used = set()
 
@@ -74,7 +74,7 @@ class TestKeyManagerIntegration:
         assert len(keys_used) >= 1
 
     @pytest.mark.integration
-    def test_groq_capacity_check(self, groq_wrapper):
+    def test_groq_capacity_check(self, groq_wrapper: MultiProviderWrapper):
         """Test high-load token estimation on Groq."""
         try:
             model = groq_wrapper.get_model(estimated_tokens=2000)
@@ -89,7 +89,7 @@ class TestKeyManagerIntegration:
             assert "No available keys" in str(e) or "capacity" in str(e).lower()
 
     @pytest.mark.integration
-    async def test_gemini_async_streaming(self, gemini_wrapper):
+    async def test_gemini_async_streaming(self, gemini_wrapper: MultiProviderWrapper):
         """Test async streaming with Gemini."""
         model = gemini_wrapper.get_model()
         assert model is not None
@@ -99,7 +99,7 @@ class TestKeyManagerIntegration:
         assert response is not None
 
     @pytest.mark.integration
-    def test_openrouter_key_rotation(self, openrouter_wrapper):
+    def test_openrouter_key_rotation(self, openrouter_wrapper: MultiProviderWrapper):
         """Test OpenRouter key rotation with free model."""
         model = openrouter_wrapper.get_model()
         assert model is not None
@@ -110,14 +110,14 @@ class TestKeyManagerIntegration:
         assert response is not None
 
     @pytest.mark.integration
-    def test_cerebras_global_stats(self, cerebras_wrapper):
+    def test_cerebras_global_stats(self, cerebras_wrapper: MultiProviderWrapper):
         """Test global stats retrieval for Cerebras."""
         stats = cerebras_wrapper.manager.get_global_stats()
         assert stats is not None
         assert hasattr(stats, 'total')
 
     @pytest.mark.integration
-    def test_groq_model_stats(self, groq_wrapper):
+    def test_groq_model_stats(self, groq_wrapper: MultiProviderWrapper):
         """Test model stats retrieval for Groq."""
         # Make a request first to ensure there's data
         model = groq_wrapper.get_model()
@@ -128,7 +128,7 @@ class TestKeyManagerIntegration:
         groq_wrapper.print_model_stats('llama-3.3-70b-versatile')
 
     @pytest.mark.integration
-    def test_gemini_key_stats(self, gemini_wrapper):
+    def test_gemini_key_stats(self, gemini_wrapper: MultiProviderWrapper):
         """Test key stats retrieval for Gemini."""
         model = gemini_wrapper.get_model()
         api_key = model.api_key
@@ -141,7 +141,7 @@ class TestKeyManagerIntegration:
         gemini_wrapper.print_key_stats(api_key)
 
     @pytest.mark.integration
-    def test_gemini_granular_stats(self, gemini_wrapper):
+    def test_gemini_granular_stats(self, gemini_wrapper: MultiProviderWrapper):
         """Test granular stats retrieval for Gemini."""
         model = gemini_wrapper.get_model()
         api_key = model.api_key
@@ -154,7 +154,7 @@ class TestKeyManagerIntegration:
         gemini_wrapper.print_granular_stats(api_key, 'gemini-2.5-flash')
 
     @pytest.mark.integration
-    def test_openrouter_key_and_granular_stats(self, openrouter_wrapper):
+    def test_openrouter_key_and_granular_stats(self, openrouter_wrapper: MultiProviderWrapper):
         """Test key and granular stats for OpenRouter."""
         model = openrouter_wrapper.get_model()
         api_key = model.api_key
