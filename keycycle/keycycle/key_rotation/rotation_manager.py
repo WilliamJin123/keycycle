@@ -2,7 +2,7 @@ import time
 import atexit
 import threading
 from threading import Lock, Event
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..config.dataclasses import (
     RateLimits, UsageSnapshot,
@@ -32,11 +32,13 @@ class RotatingKeyManager:
         db: UsageDatabase,
         logger=None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+        limit_resolver: Optional[Callable[[str, Optional[str]], RateLimits]] = None,
     ):
         self.provider_name = provider_name
         self.logger = logger or default_logger
         self.strategy = strategy
         self.cooldown_seconds = cooldown_seconds
+        self.limit_resolver = limit_resolver
         self.keys = [KeyUsage(api_key=k, strategy=strategy) for k in api_keys]
         self.current_index = 0
         self.lock = Lock()
@@ -81,12 +83,15 @@ class RotatingKeyManager:
     def _cleanup_loop(self) -> None:
         """Periodically clean deques to prevent memory bloat."""
         while not self._stop_event.is_set():
-            with self.lock:
-                for key in self.keys:
-                    for bucket in key.buckets.values():
-                        bucket.clean()
-                    if self.strategy == RateLimitStrategy.GLOBAL:
-                        key.global_bucket.clean()
+            try:
+                with self.lock:
+                    for key in self.keys:
+                        for bucket in key.buckets.values():
+                            bucket.clean()
+                        if self.strategy == RateLimitStrategy.GLOBAL:
+                            key.global_bucket.clean()
+            except Exception as e:
+                self.logger.error("Cleanup loop error: %s", e, exc_info=True)
             time.sleep(CLEANUP_INTERVAL_SECONDS)
     
     def _start_cleanup(self) -> None:
@@ -100,8 +105,18 @@ class RotatingKeyManager:
         if self._thread.is_alive():
             self._thread.join(timeout=10)
 
-    def get_key(self, model_id: str, limits: RateLimits, estimated_tokens: int = 1000) -> Optional[KeyUsage]:
-        """Get an available API key that can handle the request."""
+    def get_key(self, model_id: str, default_limits: RateLimits, estimated_tokens: int = 1000) -> Optional[KeyUsage]:
+        """
+        Get an available API key that can handle the request.
+
+        Args:
+            model_id: The model identifier for rate limit lookup
+            default_limits: Default limits to use if no per-key override exists
+            estimated_tokens: Estimated token usage for this request
+
+        Returns:
+            KeyUsage object if a key is available, None otherwise
+        """
         with self.lock:
             for offset in range(len(self.keys)):
                 idx = (self.current_index + offset) % len(self.keys)
@@ -109,6 +124,13 @@ class RotatingKeyManager:
 
                 if key.is_cooling_down(self.cooldown_seconds):
                     continue
+
+                # Resolve limits for this specific key (supports per-key overrides)
+                if self.limit_resolver:
+                    key_suffix = get_key_suffix(key.api_key)
+                    limits = self.limit_resolver(model_id, key_suffix)
+                else:
+                    limits = default_limits
 
                 if key.can_use_model(model_id, limits, estimated_tokens):
                     key.reserve(model_id, estimated_tokens)

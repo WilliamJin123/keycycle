@@ -1,88 +1,169 @@
-import asyncio
-import os
-import sys
+"""
+Integration tests for OpenAI-compatible client interface.
+Tests sync/async clients and streaming across multiple providers.
+"""
+import pytest
 from pathlib import Path
 
 from keycycle import MultiProviderWrapper
 
-# Adjust path to point to the project root
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_PATH = str(PROJECT_ROOT / "local.env")
 
-async def run_provider_test(provider: str, model_id: str):
-    print(f"\n{'='*60}")
-    print(f"Testing Provider: {provider.upper()} (Model: {model_id})")
-    print(f"{'='*60}")
 
-    try:
-        wrapper = MultiProviderWrapper.from_env(
-            provider=provider,
-            default_model_id=model_id,
-            env_file=ENV_PATH
-        )
-    except Exception as e:
-        print(f"Skipping {provider}: Failed to initialize wrapper. Error: {e}")
-        return
+class TestOpenAIClientInterface:
+    """Tests for OpenAI-compatible client interface."""
 
-    # 1. Sync Client
-    print(f"\n[{provider}] [Sync] Testing OpenAI Client...")
-    try:
-        client = wrapper.get_openai_client()
-        
+    @pytest.fixture
+    def openrouter_wrapper(self, load_env):
+        """Create OpenRouter wrapper with free model."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='openrouter',
+                default_model_id='mistralai/devstral-2512:free',
+                env_file=ENV_PATH
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"OpenRouter not configured: {e}")
+
+    @pytest.fixture
+    def cerebras_wrapper(self, load_env):
+        """Create Cerebras wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='cerebras',
+                default_model_id='llama3.1-8b',
+                env_file=ENV_PATH
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Cerebras not configured: {e}")
+
+    @pytest.fixture
+    def groq_wrapper(self, load_env):
+        """Create Groq wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='groq',
+                default_model_id='llama-3.1-8b-instant',
+                env_file=ENV_PATH
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Groq not configured: {e}")
+
+    @pytest.mark.integration
+    def test_openrouter_sync_client(self, openrouter_wrapper):
+        """Test sync OpenAI client with OpenRouter."""
+        client = openrouter_wrapper.get_openai_client()
+        assert client is not None
+
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": "Hello, what model are you? (Sync)"}],
         )
-        print(f"Response: {response.choices[0].message.content}")
-    except Exception as e:
-        print(f"[{provider}] Sync Error: {e}")
 
-    # 2. Async Client
-    print(f"\n[{provider}] [Async] Testing Async OpenAI Client...")
-    try:
-        async_client = wrapper.get_async_openai_client()
-        
+        assert response is not None
+        assert response.choices is not None
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content is not None
+
+    @pytest.mark.integration
+    async def test_openrouter_async_client(self, openrouter_wrapper):
+        """Test async OpenAI client with OpenRouter."""
+        async_client = openrouter_wrapper.get_async_openai_client()
+        assert async_client is not None
+
         response = await async_client.chat.completions.create(
             messages=[{"role": "user", "content": "Hello, what model are you? (Async)"}],
         )
-        print(f"Response: {response.choices[0].message.content}")
-    except Exception as e:
-        print(f"[{provider}] Async Error: {e}")
 
-    # 3. Stream
-    print(f"\n[{provider}] [Stream] Testing Async Stream...")
-    try:
-        # Re-use async client
-        async_client = wrapper.get_async_openai_client()
+        assert response is not None
+        assert response.choices is not None
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content is not None
+
+    @pytest.mark.integration
+    async def test_openrouter_async_stream(self, openrouter_wrapper):
+        """Test async streaming with OpenRouter."""
+        async_client = openrouter_wrapper.get_async_openai_client()
+
         stream = await async_client.chat.completions.create(
-            messages=[{"role": "user", "content": "Count to 20"}],
+            messages=[{"role": "user", "content": "Count to 5"}],
             stream=True
         )
+
+        chunks_received = 0
+        content = ""
         async for chunk in stream:
+            chunks_received += 1
             if chunk.choices and chunk.choices[0].delta.content:
-                print(chunk.choices[0].delta.content, end="", flush=True)
-        print()
-    except Exception as e:
-        print(f"[{provider}] Stream Error: {e}")
+                content += chunk.choices[0].delta.content
 
-    # Stats
-    print(f"\n[{provider}] --- Usage Stats ---")
-    wrapper.print_global_stats()
-    
-    # Clean up DB threads
-    wrapper.manager.stop()
+        assert chunks_received > 0, "No chunks received from stream"
+        assert len(content) > 0, "No content received from stream"
 
+    @pytest.mark.integration
+    def test_cerebras_sync_client(self, cerebras_wrapper):
+        """Test sync OpenAI client with Cerebras."""
+        client = cerebras_wrapper.get_openai_client()
 
-async def main():
-    test_cases = [
-        # Using a free model for OpenRouter
-        {"provider": "openrouter", "model_id": "mistralai/devstral-2512:free"},
-        # Common models for Cerebras and Groq
-        {"provider": "cerebras", "model_id": "llama3.1-8b"},
-        {"provider": "groq", "model_id": "llama-3.1-8b-instant"},
-    ]
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": "Say hello"}],
+        )
 
-    for test in test_cases:
-        await run_provider_test(test["provider"], test["model_id"])
+        assert response is not None
+        assert response.choices[0].message.content is not None
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    @pytest.mark.integration
+    async def test_cerebras_async_client(self, cerebras_wrapper):
+        """Test async OpenAI client with Cerebras."""
+        async_client = cerebras_wrapper.get_async_openai_client()
+
+        response = await async_client.chat.completions.create(
+            messages=[{"role": "user", "content": "Say hello"}],
+        )
+
+        assert response is not None
+        assert response.choices[0].message.content is not None
+
+    @pytest.mark.integration
+    def test_groq_sync_client(self, groq_wrapper):
+        """Test sync OpenAI client with Groq."""
+        client = groq_wrapper.get_openai_client()
+
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": "Say hello"}],
+        )
+
+        assert response is not None
+        assert response.choices[0].message.content is not None
+
+    @pytest.mark.integration
+    async def test_groq_async_client(self, groq_wrapper):
+        """Test async OpenAI client with Groq."""
+        async_client = groq_wrapper.get_async_openai_client()
+
+        response = await async_client.chat.completions.create(
+            messages=[{"role": "user", "content": "Say hello"}],
+        )
+
+        assert response is not None
+        assert response.choices[0].message.content is not None
+
+    @pytest.mark.integration
+    def test_stats_available_after_request(self, openrouter_wrapper):
+        """Test that usage stats are available after making requests."""
+        client = openrouter_wrapper.get_openai_client()
+
+        # Make a request
+        client.chat.completions.create(
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        # Stats should be accessible
+        stats = openrouter_wrapper.manager.get_global_stats()
+        assert stats is not None

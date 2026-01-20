@@ -1,5 +1,9 @@
+"""
+Integration tests for provider API key health checking.
+Validates that configured API keys can make successful requests.
+"""
 import os
-import sys
+import pytest
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -12,41 +16,92 @@ from agno.models.groq import Groq
 from agno.models.cerebras import Cerebras
 from agno.models.google.gemini import Gemini
 from agno.models.openrouter import OpenRouter
-from agno.utils.pprint import pprint_run_response
 
-def test_provider_keys(prefix, 
-    provider_class, 
-    model_id, 
-    prompt="Say Hello.",
-    start = 1,
-    end = None
-):
-    num = int(os.getenv(f"NUM_{prefix}", 0))
-    success = []
-    fail = []
-    end = end if end is not None else num + 1
-    for i in range(start, end):
-        key_env = f"{prefix}_API_KEY_{i}"
-        print("CALLING WITH KEY:", key_env)
+
+class TestProviderKeyHealth:
+    """Tests to verify API keys are valid and working for each provider."""
+
+    def _check_provider_key(self, prefix: str, provider_class, model_id: str, key_index: int):
+        """
+        Helper to check a single provider key.
+        Returns tuple of (success: bool, key_env_name: str, error: str | None)
+        """
+        key_env = f"{prefix}_API_KEY_{key_index}"
         key = os.getenv(key_env)
+
         if not key:
-            fail.append(key_env)
-            continue
+            return False, key_env, "Key not found in environment"
+
         try:
             agent = Agent(model=provider_class(id=model_id, api_key=key), markdown=True)
-            r = agent.run(prompt)
-            pprint_run_response(r)
-            if "429" in str(r) or "quota" in str(r).lower():
-                raise Exception("Rate limit or quota exceeded")
-            success.append(key_env)
-        except Exception:
-            fail.append(key_env)
-    print(f"{prefix} successful:", success)
-    print(f"{prefix} failed:", fail)
-    input("Press Enter to continue...")
+            response = agent.run("Say 'OK'.")
+            response_text = str(response)
 
-# test_provider_keys("GROQ", Groq, "llama-3.3-70b-versatile")
-# test_provider_keys("CEREBRAS", Cerebras, "llama-3.3-70b")
-# test_provider_keys("GEMINI", Gemini, "gemini-2.5-flash")
-test_provider_keys("OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free", start=26)
+            if "429" in response_text or "quota" in response_text.lower():
+                return False, key_env, "Rate limit or quota exceeded"
 
+            return True, key_env, None
+        except Exception as e:
+            return False, key_env, str(e)
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("key_index", range(1, 6))  # Test first 5 keys
+    def test_groq_key_health(self, key_index, load_env):
+        """Test Groq API key health."""
+        num_keys = int(os.getenv("NUM_GROQ", 0))
+        if key_index > num_keys:
+            pytest.skip(f"GROQ key {key_index} not configured (NUM_GROQ={num_keys})")
+
+        success, key_env, error = self._check_provider_key(
+            "GROQ", Groq, "llama-3.3-70b-versatile", key_index
+        )
+        assert success, f"{key_env} failed: {error}"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("key_index", range(1, 6))  # Test first 5 keys
+    def test_cerebras_key_health(self, key_index, load_env):
+        """Test Cerebras API key health."""
+        num_keys = int(os.getenv("NUM_CEREBRAS", 0))
+        if key_index > num_keys:
+            pytest.skip(f"CEREBRAS key {key_index} not configured (NUM_CEREBRAS={num_keys})")
+
+        success, key_env, error = self._check_provider_key(
+            "CEREBRAS", Cerebras, "llama-3.3-70b", key_index
+        )
+        assert success, f"{key_env} failed: {error}"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("key_index", range(1, 6))  # Test first 5 keys
+    def test_gemini_key_health(self, key_index, load_env):
+        """Test Gemini API key health."""
+        num_keys = int(os.getenv("NUM_GEMINI", 0))
+        if key_index > num_keys:
+            pytest.skip(f"GEMINI key {key_index} not configured (NUM_GEMINI={num_keys})")
+
+        success, key_env, error = self._check_provider_key(
+            "GEMINI", Gemini, "gemini-2.5-flash", key_index
+        )
+        assert success, f"{key_env} failed: {error}"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("key_index", range(1, 6))  # Test first 5 keys
+    def test_openrouter_key_health(self, key_index, load_env):
+        """Test OpenRouter API key health."""
+        num_keys = int(os.getenv("NUM_OPENROUTER", 0))
+        if key_index > num_keys:
+            pytest.skip(f"OPENROUTER key {key_index} not configured (NUM_OPENROUTER={num_keys})")
+
+        success, key_env, error = self._check_provider_key(
+            "OPENROUTER", OpenRouter, "xiaomi/mimo-v2-flash:free", key_index
+        )
+        assert success, f"{key_env} failed: {error}"
+
+    @pytest.mark.integration
+    def test_at_least_one_provider_configured(self, load_env):
+        """Verify at least one provider has keys configured."""
+        providers = ["GROQ", "CEREBRAS", "GEMINI", "OPENROUTER"]
+        configured = [p for p in providers if int(os.getenv(f"NUM_{p}", 0)) > 0]
+
+        assert len(configured) > 0, (
+            "No providers configured. Set NUM_<PROVIDER> and <PROVIDER>_API_KEY_N in local.env"
+        )

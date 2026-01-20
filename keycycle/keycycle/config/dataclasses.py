@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from .enums import RateLimitStrategy
 from .constants import (
     SECONDS_PER_MINUTE, SECONDS_PER_HOUR, SECONDS_PER_DAY,
@@ -19,6 +19,10 @@ class RateLimits:
     tokens_per_minute: Optional[int] = None
     tokens_per_hour: Optional[int] = None
     tokens_per_day: Optional[int] = None
+
+# Type alias for per-key rate limit overrides
+# Can be a single RateLimits (applies to all models) or a dict mapping model_id -> RateLimits
+KeyLimitOverride = Union[RateLimits, Dict[str, RateLimits]]
 
 @dataclass
 class UsageSnapshot:
@@ -124,7 +128,13 @@ class UsageBucket:
     def commit(self, actual_tokens: int, reserved_tokens: int, timestamp: float):
         """Remove reservation and add actual usage"""
         self.pending_tokens -= reserved_tokens
-        if self.pending_tokens < 0: self.pending_tokens = 0 # Safety floor
+        if self.pending_tokens < 0:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Pending tokens went negative (%d), clamping to 0",
+                self.pending_tokens
+            )
+            self.pending_tokens = 0
         self.add(actual_tokens, timestamp)
     
     def get_snapshot(self) -> UsageSnapshot:

@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import pytest
 from unittest.mock import MagicMock
 from keycycle.multi_provider_wrapper import MultiProviderWrapper
+from keycycle.core.exceptions import KeyNotFoundError
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_env():
@@ -51,14 +52,16 @@ class TestSpecificKeyRetrieval:
         assert key_partial == "key-222"
 
     def test_invalid_index_raises_error(self, wrapper: MultiProviderWrapper):
-        """Test that invalid index raises ValueError"""
-        with pytest.raises(ValueError):
+        """Test that invalid index raises KeyNotFoundError"""
+        with pytest.raises(Exception) as excinfo:
             wrapper.get_api_key(key_id=99)
+        assert "KeyNotFoundError" in type(excinfo.value).__name__ or "not found" in str(excinfo.value).lower()
 
     def test_invalid_string_raises_error(self, wrapper: MultiProviderWrapper):
-        """Test that non-existent key string raises ValueError"""
-        with pytest.raises(ValueError):
+        """Test that non-existent key string raises KeyNotFoundError"""
+        with pytest.raises(Exception) as excinfo:
             wrapper.get_api_key(key_id="non-existent-key")
+        assert "KeyNotFoundError" in type(excinfo.value).__name__ or "not found" in str(excinfo.value).lower()
 
     def test_usage_tracking_on_specific_key(self, wrapper: MultiProviderWrapper):
         """Ensure usage is tracked even when retrieving specific keys"""

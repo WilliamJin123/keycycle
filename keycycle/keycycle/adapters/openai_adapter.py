@@ -41,11 +41,11 @@ PROVIDER_BASE_URLS = {
 }
 
 class BaseRotatingClient:
-    def __init__(self, 
-        manager: RotatingKeyManager, 
-        limit_resolver: Callable[[str], RateLimits],
-        default_model: str, 
-        estimated_tokens: int = 1000, 
+    def __init__(self,
+        manager: RotatingKeyManager,
+        limit_resolver: Callable[[str, Optional[str]], RateLimits],
+        default_model: str,
+        estimated_tokens: int = 1000,
         max_retries: int = 5,
         base_url: Optional[str] = None,
         provider: Optional[str] = None,
@@ -120,7 +120,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
         model_id = kwargs.get('model', self.default_model)
         if 'model' not in kwargs:
             kwargs['model'] = model_id
-        limits = self.limit_resolver(model_id)
+        limits = self.limit_resolver(model_id, None)
 
         for attempt in range(self.max_retries + 1):
             key_usage = self.manager.get_key(model_id, limits, self.estimated_tokens)
@@ -193,7 +193,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
         try:
             for chunk in generator:
                 if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_tokens = chunk.usage.total_tokens
+                    accumulated_tokens += chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):
@@ -232,7 +232,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
         model_id = kwargs.get('model', self.default_model)
         if 'model' not in kwargs:
             kwargs['model'] = model_id
-        limits = self.limit_resolver(model_id)
+        limits = self.limit_resolver(model_id, None)
 
         if kwargs.get('stream', False) and 'stream_options' not in kwargs:
             kwargs['stream_options'] = {"include_usage": True}
@@ -308,7 +308,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
         try:
             async for chunk in generator:
                 if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_tokens = chunk.usage.total_tokens
+                    accumulated_tokens += chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):

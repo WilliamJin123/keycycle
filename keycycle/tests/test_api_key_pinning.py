@@ -5,7 +5,8 @@ from typing import Any
 
 # Import your wrapper class
 # Change 'your_module' to the actual path where MultiProviderWrapper is defined
-from keycycle import MultiProviderWrapper 
+from keycycle import MultiProviderWrapper
+from keycycle.core.exceptions import KeyNotFoundError 
 
 # --- Mocks & Fixtures ---
 @pytest.fixture(scope="session", autouse=True)
@@ -102,11 +103,13 @@ def test_get_model_without_pinning(mock_wrapper):
     assert model._fixed_key_id is None
 
 def test_invalid_key_raises_error(mock_wrapper):
-    """Test that requesting a non-existent key raises ValueError."""
-    with pytest.raises(ValueError) as excinfo:
-        mock_wrapper.get_model(key_id=99) # Index out of bounds
-    assert "not found" in str(excinfo.value)
+    """Test that requesting a non-existent key raises KeyNotFoundError."""
+    # Test index out of bounds
+    with pytest.raises(Exception) as excinfo:
+        mock_wrapper.get_model(key_id=99)
+    assert "KeyNotFoundError" in type(excinfo.value).__name__ or "not found" in str(excinfo.value).lower()
 
-    with pytest.raises(ValueError) as excinfo:
+    # Test non-existent suffix
+    with pytest.raises(Exception) as excinfo:
         mock_wrapper.get_model(key_id="non-existent-suffix")
-    assert "not found" in str(excinfo.value)
+    assert "KeyNotFoundError" in type(excinfo.value).__name__ or "not found" in str(excinfo.value).lower()

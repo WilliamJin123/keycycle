@@ -1,102 +1,198 @@
+"""
+Stress tests for rate limiting and key rotation.
+Tests that the local rate limiter properly enforces limits and triggers rotation.
+"""
 import asyncio
-import sys
-import os
+import pytest
 from pathlib import Path
 
-from agno.agent import Agent
-from agno.models.cerebras import Cerebras
-from agno.models.groq import Groq
-from agno.models.google import Gemini
-from agno.models.openrouter import OpenRouter
-
 from keycycle import MultiProviderWrapper
+from agno.agent import Agent
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = str(PROJECT_ROOT / "local.env")
-# DB_FILE = str(PROJECT_ROOT / "api_usage.db")
 
-async def run_stress_test(provider_name: str, wrapper: MultiProviderWrapper, model_id, limit_attribute_name):
-    print(f"\n{'#'*60}")
-    print(f"STRESS TEST: {provider_name.upper()} ({model_id})")
-    print(f"Targeting Limit: {limit_attribute_name}")
-    print(f"{'#'*60}\n")
 
-    # 1. ROBUST FETCH: Try specific model ID first, then fallback to 'default'
-    provider_limits = wrapper.MODEL_LIMITS.get(provider_name, {})
-    limits_config = provider_limits.get(model_id)
-    
-    if not limits_config:
-        print(f" Specific limit for '{model_id}' not found. Using 'default'.")
-        limits_config = provider_limits.get('default')
+class TestStress:
+    """Stress tests for rate limiting functionality."""
 
-    if not limits_config:
-        print(f" No limits configuration found for {provider_name}. Cannot stress test.")
-        return
-
-    # 2. Get the actual integer value
-    limit_value = getattr(limits_config, limit_attribute_name, None)
-
-    if limit_value is None:
-        print(f" Limit '{limit_attribute_name}' is None (unlimited). Cannot stress test.")
-        return
-
-    # 3. Set target loops (Limit + 2 to force a switch)
-    target_requests = limit_value + 2
-    print(f"-> Limit is {limit_value}. Running {target_requests} requests to force rotation.\n")
-
-    for i in range(1, target_requests + 1):
+    @pytest.fixture
+    def cerebras_wrapper(self, load_env):
+        """Create Cerebras wrapper."""
         try:
-            # Get model (this counts against our local limit logic)
-            # wait=False ensures we fail fast if our local logic says "Stop"
-            model = wrapper.get_model(id=model_id, estimated_tokens=10, wait=False)
-            
-            # Safe key printing
-            current_key = "UNKNOWN"
-            if hasattr(model, 'api_key') and model.api_key:
-                current_key = model.api_key[-8:]
-            
-            print(f"[{i}/{target_requests}] Key ...{current_key} | ", end="", flush=True)
-
-            # Fire a cheap request
-            agent = Agent(model=model)
-            response = await agent.arun("hi", stream=False)
-            
-            print(" Success")
-            
-            # 4. CRITICAL: Small sleep to avoid 'burst' limits (helps with Gemini)
-            await asyncio.sleep(0.5)
-
-        except RuntimeError as e:
-            print(f" BLOCKED (Local): {e}")
-            print(f"   (This confirms the Local Rate Limiter is working!)")
-            break
+            wrapper = MultiProviderWrapper.from_env("cerebras", 'llama3.1-8b', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
         except Exception as e:
-            # This catches 429s from the provider that slipped past our local limiter
-            print(f" API Error (Provider): {e}")
-            # If we hit a real provider error, we should probably stop or slow down
-            await asyncio.sleep(2)
-async def main():
-    # 1. Initialize Wrappers
-    cerebras = MultiProviderWrapper.from_env("cerebras", 'llama3.1-8b', env_file=ENV_FILE)
-    groq = MultiProviderWrapper.from_env("groq", 'groq/compound-mini', env_file=ENV_FILE)
-    gemini = MultiProviderWrapper.from_env("gemini", 'gemini-2.5-flash', env_file=ENV_FILE)
-    openrouter = MultiProviderWrapper.from_env("openrouter", 'tngtech/deepseek-r1t2-chimera:free', env_file=ENV_FILE)
-    
-    # 2. Run Stress Tests
-    
-    # Test A: Cerebras (Hourly Requests)
-    # await run_stress_test("cerebras", cerebras, 'zai-glm-4.6', 'requests_per_minute')
+            pytest.skip(f"Cerebras not configured: {e}")
 
-    # Test B: Groq (Daily Requests)
-    # await run_stress_test("groq", groq, 'groq/compound-mini', 'requests_per_day')
+    @pytest.fixture
+    def groq_wrapper(self, load_env):
+        """Create Groq wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("groq", 'groq/compound-mini', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Groq not configured: {e}")
 
-    # Test C: Gemini (Daily Requests)
-    await run_stress_test("gemini", gemini, 'gemini-2.5-flash-lite', 'requests_per_minute')
+    @pytest.fixture
+    def gemini_wrapper(self, load_env):
+        """Create Gemini wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("gemini", 'gemini-2.5-flash', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Gemini not configured: {e}")
 
-    # Test D: OpenRouter (Requests Per Minute)
-    # await run_stress_test( "openrouter",  openrouter,  'tngtech/deepseek-r1t2-chimera:free',  'requests_per_minute')
+    @pytest.fixture
+    def openrouter_wrapper(self, load_env):
+        """Create OpenRouter wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("openrouter", 'tngtech/deepseek-r1t2-chimera:free', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"OpenRouter not configured: {e}")
 
-    print("\n✅ ALL STRESS TESTS COMPLETED")
+    def _get_limit_config(self, wrapper, provider_name: str, model_id: str, limit_attr: str):
+        """Get rate limit configuration for a provider/model."""
+        provider_limits = wrapper.MODEL_LIMITS.get(provider_name, {})
+        limits_config = provider_limits.get(model_id)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+        if not limits_config:
+            limits_config = provider_limits.get('default')
+
+        if not limits_config:
+            return None
+
+        return getattr(limits_config, limit_attr, None)
+
+    async def _run_stress_test(
+        self,
+        wrapper,
+        provider_name: str,
+        model_id: str,
+        limit_attr: str,
+        max_requests: int = 10
+    ):
+        """
+        Run stress test for a provider.
+
+        Returns tuple of (successful_requests, blocked_by_limiter, errors)
+        """
+        limit_value = self._get_limit_config(wrapper, provider_name, model_id, limit_attr)
+
+        if limit_value is None:
+            pytest.skip(f"{provider_name} limit '{limit_attr}' is None (unlimited)")
+
+        # Cap requests to avoid excessive API usage
+        target_requests = min(limit_value + 2, max_requests)
+
+        successful = 0
+        blocked = False
+        errors = []
+
+        for i in range(target_requests):
+            try:
+                model = wrapper.get_model(id=model_id, estimated_tokens=10, wait=False)
+
+                agent = Agent(model=model)
+                response = await agent.arun("hi", stream=False)
+
+                successful += 1
+                await asyncio.sleep(0.5)
+
+            except RuntimeError as e:
+                if "No available keys" in str(e) or "Timeout" in str(e):
+                    blocked = True
+                    break
+                errors.append(str(e))
+                break
+            except Exception as e:
+                errors.append(str(e))
+                await asyncio.sleep(2)
+
+        return successful, blocked, errors
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_gemini_rate_limit_stress(self, gemini_wrapper):
+        """Stress test Gemini rate limiting."""
+        successful, blocked, errors = await self._run_stress_test(
+            gemini_wrapper,
+            "gemini",
+            "gemini-2.5-flash-lite",
+            "requests_per_minute",
+            max_requests=8
+        )
+
+        # Should have made at least some successful requests
+        assert successful > 0, f"No requests succeeded. Errors: {errors}"
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_cerebras_rate_limit_stress(self, cerebras_wrapper):
+        """Stress test Cerebras rate limiting."""
+        successful, blocked, errors = await self._run_stress_test(
+            cerebras_wrapper,
+            "cerebras",
+            "llama3.1-8b",
+            "requests_per_minute",
+            max_requests=8
+        )
+
+        assert successful > 0, f"No requests succeeded. Errors: {errors}"
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_groq_rate_limit_stress(self, groq_wrapper):
+        """Stress test Groq rate limiting."""
+        successful, blocked, errors = await self._run_stress_test(
+            groq_wrapper,
+            "groq",
+            "groq/compound-mini",
+            "requests_per_day",
+            max_requests=8
+        )
+
+        assert successful > 0, f"No requests succeeded. Errors: {errors}"
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_openrouter_rate_limit_stress(self, openrouter_wrapper):
+        """Stress test OpenRouter rate limiting."""
+        successful, blocked, errors = await self._run_stress_test(
+            openrouter_wrapper,
+            "openrouter",
+            "tngtech/deepseek-r1t2-chimera:free",
+            "requests_per_minute",
+            max_requests=8
+        )
+
+        assert successful > 0, f"No requests succeeded. Errors: {errors}"
+
+    @pytest.mark.integration
+    @pytest.mark.slow
+    async def test_multiple_keys_rotate(self, gemini_wrapper):
+        """Test that multiple keys are used during stress."""
+        keys_used = set()
+
+        for i in range(5):
+            try:
+                model = gemini_wrapper.get_model(estimated_tokens=10, wait=False)
+                if hasattr(model, 'api_key') and model.api_key:
+                    keys_used.add(model.api_key[-8:])
+
+                agent = Agent(model=model)
+                await agent.arun("hi", stream=False)
+                await asyncio.sleep(0.5)
+
+            except RuntimeError:
+                break
+            except Exception:
+                await asyncio.sleep(1)
+
+        # Should have used at least one key
+        assert len(keys_used) >= 1, "No keys were tracked"

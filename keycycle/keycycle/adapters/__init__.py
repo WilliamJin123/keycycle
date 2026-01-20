@@ -1,3 +1,26 @@
 from .openai_adapter import RotatingOpenAIClient, RotatingAsyncOpenAIClient
+from .generic_adapter import (
+    create_rotating_client,
+    detect_async_client,
+    default_usage_extractor,
+    GenericClientConfig,
+    SyncGenericRotatingClient,
+    AsyncGenericRotatingClient,
+    SyncGenericProxyHelper,
+    AsyncGenericProxyHelper,
+)
 
-__all__ = ["RotatingOpenAIClient", "RotatingAsyncOpenAIClient"]
+__all__ = [
+    # OpenAI-specific
+    "RotatingOpenAIClient",
+    "RotatingAsyncOpenAIClient",
+    # Generic adapter
+    "create_rotating_client",
+    "detect_async_client",
+    "default_usage_extractor",
+    "GenericClientConfig",
+    "SyncGenericRotatingClient",
+    "AsyncGenericRotatingClient",
+    "SyncGenericProxyHelper",
+    "AsyncGenericProxyHelper",
+]

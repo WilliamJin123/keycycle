@@ -1,129 +1,158 @@
-import asyncio
-import os
-import sys
+"""
+Integration tests for environment-based MultiProviderWrapper initialization.
+Tests wrapper creation, model retrieval, and stats reporting for multiple providers.
+"""
+import pytest
 from pathlib import Path
-from typing import Dict
+
+from keycycle import MultiProviderWrapper
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENV_PATH = str(PROJECT_ROOT / "local.env")
 
 
-from dotenv import load_dotenv
-from agno.agent import Agent
-from keycycle import MultiProviderWrapper 
+class TestEnvironmentIntegration:
+    """Tests for MultiProviderWrapper initialization from environment."""
 
-CURRENT_DIR = Path(__file__).resolve().parent
-ENV_PATH = CURRENT_DIR / "local.env"
-
-load_dotenv(dotenv_path=ENV_PATH, override=True)
-
-async def main():
-    print(f"--- Loading Env from: {ENV_PATH} ---")
-    try:
-        cerebras_wrapper = MultiProviderWrapper.from_env(
-            provider='cerebras',
-            default_model_id='llama-3.3-70b',
-            env_file=str(ENV_PATH),
-            temperature=0.7
-        )
-    except Exception as e:
-        print(f"Skipping Cerebras: {e}")
-        cerebras_wrapper = None
-
-    try:
-        groq_wrapper = MultiProviderWrapper.from_env(
-            provider='groq',
-            default_model_id='llama-3.3-70b-versatile',
-            env_file=ENV_PATH,
-            top_p=0.95,
-        )
-    except Exception as e:
-        print(f"Skipping Groq: {e}")
-        groq_wrapper = None
-
-    try:
-        gemini_wrapper = MultiProviderWrapper.from_env(
-            provider='gemini',
-            default_model_id='gemini-2.5-flash',
-            env_file=ENV_PATH,
-            top_k=10
-        )
-    except Exception as e:
-        print(f"Skipping Gemini: {e}")
-        gemini_wrapper = None
-
-    try:
-        openrouter_wrapper = MultiProviderWrapper.from_env(
-            provider='openrouter',
-            default_model_id='nvidia/nemotron-nano-12b-v2-vl:free',
-            env_file=ENV_PATH
-        )
-    except Exception as e:
-        print(f"Skipping OpenRouter: {e}")
-        openrouter_wrapper = None
-
-    wrappers: Dict[str, MultiProviderWrapper] = {}
-    if cerebras_wrapper: wrappers["Cerebras"] = cerebras_wrapper
-    if groq_wrapper: wrappers["Groq"] = groq_wrapper
-    if gemini_wrapper: wrappers["Gemini"] = gemini_wrapper
-    if openrouter_wrapper: wrappers["OpenRouter"] = openrouter_wrapper
-
-    request_prompt = "Write a 1-sentence interesting fact about space."
-    usage_history = {} 
-
-    print(f"\n{'='*20} STARTING REQUESTS {'='*20}")
-    print(f"Cloud DB: {os.getenv('TIDB_DB_URL', 'Using Default/None')}")
-
-    for provider_name, wrapper in wrappers.items():
-        print(f"\n--- Running {provider_name} ---")
-        
+    @pytest.fixture
+    def cerebras_wrapper(self, load_env):
+        """Create Cerebras wrapper from environment."""
         try:
-            model = wrapper.get_model(estimated_tokens=500, wait=True, timeout=20)
-            
-            # 2. Capture Identifier for Reports
-            used_key = model.api_key 
-            used_model_id = wrapper.default_model_id
-            
-            usage_history[provider_name] = {
-                "key": used_key,
-                "model_id": used_model_id
-            }
-            
-            # 3. Initialize Agno Agent with our rotating model
-            agent = Agent(model=model, markdown=True)
-            
-            print(f"-> Using Key: ...{used_key[-8:]}")
-            # This triggers ainvoke_stream -> _rotate_credentials -> _get_metrics -> record_usage
-            await agent.aprint_response(request_prompt, stream=True, show_reasoning=True)
-            
+            wrapper = MultiProviderWrapper.from_env(
+                provider='cerebras',
+                default_model_id='llama-3.3-70b',
+                env_file=ENV_PATH,
+                temperature=0.7
+            )
+            yield wrapper
+            wrapper.manager.stop()
         except Exception as e:
-            print(f"-> FAILED: {e}")
-            usage_history[provider_name] = None
+            pytest.skip(f"Cerebras not configured: {e}")
 
-        # Short sleep to allow the AsyncLogger to process the Turso batch
-        await asyncio.sleep(1)
+    @pytest.fixture
+    def groq_wrapper(self, load_env):
+        """Create Groq wrapper from environment."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='groq',
+                default_model_id='llama-3.3-70b-versatile',
+                env_file=ENV_PATH,
+                top_p=0.95,
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Groq not configured: {e}")
 
-    print(f"\n\n{'='*20} GENERATING REPORTS {'='*20}")
+    @pytest.fixture
+    def gemini_wrapper(self, load_env):
+        """Create Gemini wrapper from environment."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='gemini',
+                default_model_id='gemini-2.5-flash',
+                env_file=ENV_PATH,
+                top_k=10
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Gemini not configured: {e}")
 
-    for provider_name, wrapper in wrappers.items():
-        history = usage_history.get(provider_name)
-        if not history:
-            continue
+    @pytest.fixture
+    def openrouter_wrapper(self, load_env):
+        """Create OpenRouter wrapper from environment."""
+        try:
+            wrapper = MultiProviderWrapper.from_env(
+                provider='openrouter',
+                default_model_id='nvidia/nemotron-nano-12b-v2-vl:free',
+                env_file=ENV_PATH
+            )
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"OpenRouter not configured: {e}")
 
-        print(f"\n\n>>> REPORTS FOR {provider_name.upper()} <<<\n")
+    @pytest.mark.integration
+    def test_cerebras_wrapper_initialization(self, cerebras_wrapper):
+        """Test Cerebras wrapper initializes correctly."""
+        assert cerebras_wrapper is not None
+        assert cerebras_wrapper.provider == 'cerebras'
+        assert cerebras_wrapper.default_model_id == 'llama-3.3-70b'
 
-        # Global Stats: Now hydrated from Turso in O(1)
-        wrapper.print_global_stats()
-        
-        # Key Stats: Shows current usage + last_429 cooldown status
-        wrapper.print_key_stats(identifier=history['key'])
+    @pytest.mark.integration
+    def test_groq_wrapper_initialization(self, groq_wrapper):
+        """Test Groq wrapper initializes correctly."""
+        assert groq_wrapper is not None
+        assert groq_wrapper.provider == 'groq'
+        assert groq_wrapper.default_model_id == 'llama-3.3-70b-versatile'
 
-        # Model Stats: Aggregates across your rotation pool
-        wrapper.print_model_stats(model_id=history['model_id'])
+    @pytest.mark.integration
+    def test_gemini_wrapper_initialization(self, gemini_wrapper):
+        """Test Gemini wrapper initializes correctly."""
+        assert gemini_wrapper is not None
+        assert gemini_wrapper.provider == 'gemini'
+        assert gemini_wrapper.default_model_id == 'gemini-2.5-flash'
 
-    # Final cleanup to flush Turso logs before script exit
-    for wrapper in wrappers.values():
-        wrapper.manager.stop()
+    @pytest.mark.integration
+    def test_openrouter_wrapper_initialization(self, openrouter_wrapper):
+        """Test OpenRouter wrapper initializes correctly."""
+        assert openrouter_wrapper is not None
+        assert openrouter_wrapper.provider == 'openrouter'
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    @pytest.mark.integration
+    def test_cerebras_model_retrieval(self, cerebras_wrapper):
+        """Test getting a model from Cerebras wrapper."""
+        model = cerebras_wrapper.get_model(estimated_tokens=500, wait=True, timeout=20)
+        assert model is not None
+        assert hasattr(model, 'api_key')
+        assert model.api_key is not None
+
+    @pytest.mark.integration
+    def test_groq_model_retrieval(self, groq_wrapper):
+        """Test getting a model from Groq wrapper."""
+        model = groq_wrapper.get_model(estimated_tokens=500, wait=True, timeout=20)
+        assert model is not None
+        assert hasattr(model, 'api_key')
+        assert model.api_key is not None
+
+    @pytest.mark.integration
+    def test_gemini_model_retrieval(self, gemini_wrapper):
+        """Test getting a model from Gemini wrapper."""
+        model = gemini_wrapper.get_model(estimated_tokens=500, wait=True, timeout=20)
+        assert model is not None
+        assert hasattr(model, 'api_key')
+        assert model.api_key is not None
+
+    @pytest.mark.integration
+    def test_openrouter_model_retrieval(self, openrouter_wrapper):
+        """Test getting a model from OpenRouter wrapper."""
+        model = openrouter_wrapper.get_model(estimated_tokens=500, wait=True, timeout=20)
+        assert model is not None
+        assert hasattr(model, 'api_key')
+        assert model.api_key is not None
+
+    @pytest.mark.integration
+    def test_cerebras_stats_available(self, cerebras_wrapper):
+        """Test that Cerebras stats methods are available."""
+        # Just verify the method runs without error
+        stats = cerebras_wrapper.manager.get_global_stats()
+        assert stats is not None
+
+    @pytest.mark.integration
+    def test_groq_stats_available(self, groq_wrapper):
+        """Test that Groq stats methods are available."""
+        stats = groq_wrapper.manager.get_global_stats()
+        assert stats is not None
+
+    @pytest.mark.integration
+    def test_gemini_stats_available(self, gemini_wrapper):
+        """Test that Gemini stats methods are available."""
+        stats = gemini_wrapper.manager.get_global_stats()
+        assert stats is not None
+
+    @pytest.mark.integration
+    def test_openrouter_stats_available(self, openrouter_wrapper):
+        """Test that OpenRouter stats methods are available."""
+        stats = openrouter_wrapper.manager.get_global_stats()
+        assert stats is not None

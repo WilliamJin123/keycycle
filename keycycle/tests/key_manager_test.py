@@ -1,104 +1,168 @@
-import asyncio
-import sys
-import os
+"""
+Integration tests for KeyManager functionality.
+Tests key rotation, capacity checking, and statistics collection.
+"""
+import pytest
 from pathlib import Path
 
-
 from keycycle import MultiProviderWrapper
-
 from agno.agent import Agent
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = str(PROJECT_ROOT / "local.env")
-# DB_FILE = str(PROJECT_ROOT / "api_usage.db")
 
-async def main():
-    print("--- STARTING SIMPLE KEY MANAGER TEST ---\n")
 
-    # 1. Initialize Wrappers
-    print("Initializing Wrappers...")
-    cerebras = MultiProviderWrapper.from_env("cerebras", 'llama3.1-8b', env_file=ENV_FILE)
-    groq = MultiProviderWrapper.from_env("groq", 'llama-3.3-70b-versatile', env_file=ENV_FILE)
-    gemini = MultiProviderWrapper.from_env("gemini", 'gemini-2.5-flash', env_file=ENV_FILE)
-    openrouter = MultiProviderWrapper.from_env("openrouter", 'qwen/qwen3-coder:free', env_file=ENV_FILE)
-    # 2. Test Basic Rotation (Cerebras)
-    print("\n[CEREBRAS] Testing Key Rotation (3 Requests)")
-    for i in range(3):
+class TestKeyManagerIntegration:
+    """Integration tests for the key manager."""
+
+    @pytest.fixture
+    def cerebras_wrapper(self, load_env):
+        """Create Cerebras wrapper."""
         try:
-            model = cerebras.get_model()
-            print(f"  Req {i+1}: Key ...{model.api_key[-8:]} -> ", end="", flush=True)
-            
-            agent = Agent(model=model)
-            agent.print_response("Say 'Confirmed'", stream=False)
-            agent.print_response("Say 'Confirmed (with Stream)'", stream=True)
+            wrapper = MultiProviderWrapper.from_env("cerebras", 'llama3.1-8b', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
         except Exception as e:
-            print(f"Failed: {e}")
+            pytest.skip(f"Cerebras not configured: {e}")
 
-    # 3. Test Capacity Check (Groq)
-    print("\n[GROQ] Testing High-Load Token Estimation (2000 tokens)")
-    try:
-        # Should verify if any key has 2000 tokens of capacity available
-        model = groq.get_model(estimated_tokens=2000) 
-        print(f"  Success: Key ...{model.api_key[-8:]} accepted load.")
-        
+    @pytest.fixture
+    def groq_wrapper(self, load_env):
+        """Create Groq wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("groq", 'llama-3.3-70b-versatile', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Groq not configured: {e}")
+
+    @pytest.fixture
+    def gemini_wrapper(self, load_env):
+        """Create Gemini wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("gemini", 'gemini-2.5-flash', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"Gemini not configured: {e}")
+
+    @pytest.fixture
+    def openrouter_wrapper(self, load_env):
+        """Create OpenRouter wrapper."""
+        try:
+            wrapper = MultiProviderWrapper.from_env("openrouter", 'qwen/qwen3-coder:free', env_file=ENV_FILE)
+            yield wrapper
+            wrapper.manager.stop()
+        except Exception as e:
+            pytest.skip(f"OpenRouter not configured: {e}")
+
+    @pytest.mark.integration
+    def test_cerebras_key_rotation(self, cerebras_wrapper):
+        """Test that Cerebras rotates through keys on multiple requests."""
+        keys_used = set()
+
+        for i in range(3):
+            model = cerebras_wrapper.get_model()
+            assert model is not None
+            assert hasattr(model, 'api_key')
+            keys_used.add(model.api_key)
+
+            agent = Agent(model=model)
+            response = agent.run("Say 'Confirmed'")
+            assert response is not None
+
+        # May or may not rotate depending on key count, but should complete without error
+        assert len(keys_used) >= 1
+
+    @pytest.mark.integration
+    def test_groq_capacity_check(self, groq_wrapper):
+        """Test high-load token estimation on Groq."""
+        try:
+            model = groq_wrapper.get_model(estimated_tokens=2000)
+            assert model is not None
+            assert hasattr(model, 'api_key')
+
+            agent = Agent(model=model)
+            response = agent.run("Explain quantum entanglement in one sentence.")
+            assert response is not None
+        except RuntimeError as e:
+            # Expected if capacity limit is reached
+            assert "No available keys" in str(e) or "capacity" in str(e).lower()
+
+    @pytest.mark.integration
+    async def test_gemini_async_streaming(self, gemini_wrapper):
+        """Test async streaming with Gemini."""
+        model = gemini_wrapper.get_model()
+        assert model is not None
+
         agent = Agent(model=model)
-        await agent.aprint_response("Explain quantum entanglement in one sentence.", stream=True)
-    except RuntimeError as e:
-        print(f"  Expected Limit Reached: {e}")
-    except Exception as e:
-        print(f"  Error: {e}")
+        response = await agent.arun("List 3 fruits.")
+        assert response is not None
 
-    # 4. Test Async Streaming (Gemini)
-    print("\n[GEMINI] Testing Async Streaming")
-    last_key = None
-    try:
-        model = gemini.get_model()
-        last_key = model.api_key
-        print(f"  Using Key ...{last_key[-8:]}")
-        
+    @pytest.mark.integration
+    def test_openrouter_key_rotation(self, openrouter_wrapper):
+        """Test OpenRouter key rotation with free model."""
+        model = openrouter_wrapper.get_model()
+        assert model is not None
+        assert hasattr(model, 'api_key')
+
         agent = Agent(model=model)
-        await agent.aprint_response("List 3 fruits.", stream=False)
-    except Exception as e:
-        print(f"  Error: {e}")
+        response = agent.run("Write a Python function to add two numbers.")
+        assert response is not None
 
-    print("\n[OPENROUTER] Testing Free Model with Key Rotation")
-    openrouter_last_key = None
-    try:
-        model = openrouter.get_model()
-        openrouter_last_key = model.api_key
-        print(f"  Req {i+1}: Key ...{model.api_key[-8:]} -> ", end="", flush=True)
-        
+    @pytest.mark.integration
+    def test_cerebras_global_stats(self, cerebras_wrapper):
+        """Test global stats retrieval for Cerebras."""
+        stats = cerebras_wrapper.manager.get_global_stats()
+        assert stats is not None
+        assert hasattr(stats, 'total')
+
+    @pytest.mark.integration
+    def test_groq_model_stats(self, groq_wrapper):
+        """Test model stats retrieval for Groq."""
+        # Make a request first to ensure there's data
+        model = groq_wrapper.get_model()
         agent = Agent(model=model)
-        agent.print_response("Write a Python function to add two numbers.", stream=False)
-    except Exception as e:
-        print(f"Failed: {e}")
+        agent.run("Hello")
 
-    # 5. Test Statistics
-    print("\n" + "="*20 + " STATS AUDIT " + "="*20)
-    
-    print("\n1. Global Stats (Cerebras):")
-    cerebras.print_global_stats()
+        # Now check stats - the print methods should work without error
+        groq_wrapper.print_model_stats('llama-3.3-70b-versatile')
 
-    print("\n2. Model Stats (Groq - llama-3.3-70b-versatile):")
-    groq.print_model_stats('llama-3.3-70b-versatile')
+    @pytest.mark.integration
+    def test_gemini_key_stats(self, gemini_wrapper):
+        """Test key stats retrieval for Gemini."""
+        model = gemini_wrapper.get_model()
+        api_key = model.api_key
 
-    if last_key:
-        print(f"\n3. Key Stats (Gemini - {last_key[-8:]}):")
-        gemini.print_key_stats(last_key)
+        # Make a request
+        agent = Agent(model=model)
+        agent.run("Hello")
 
-        print(f"\n4. Granular Stats (Gemini Key + gemini-2.5-flash):")
-        gemini.print_granular_stats(last_key, 'gemini-2.5-flash')
+        # Key stats should work
+        gemini_wrapper.print_key_stats(api_key)
 
-    print("\n--- TEST COMPLETE ---")
+    @pytest.mark.integration
+    def test_gemini_granular_stats(self, gemini_wrapper):
+        """Test granular stats retrieval for Gemini."""
+        model = gemini_wrapper.get_model()
+        api_key = model.api_key
 
-    if openrouter_last_key:
-        print(f"\n7. Key Stats (OpenRouter - {openrouter_last_key[-8:]}):")
-        openrouter.print_key_stats(openrouter_last_key)
+        # Make a request
+        agent = Agent(model=model)
+        agent.run("Hello")
 
-        print(f"\n8. Granular Stats (OpenRouter Key + qwen/qwen3-coder:free):")
-        openrouter.print_granular_stats(openrouter_last_key, 'qwen/qwen3-coder:free')
+        # Granular stats should work
+        gemini_wrapper.print_granular_stats(api_key, 'gemini-2.5-flash')
 
-    print("\n--- TEST COMPLETE ---")
-    
-if __name__ == "__main__":
-    asyncio.run(main())
+    @pytest.mark.integration
+    def test_openrouter_key_and_granular_stats(self, openrouter_wrapper):
+        """Test key and granular stats for OpenRouter."""
+        model = openrouter_wrapper.get_model()
+        api_key = model.api_key
+
+        # Make a request
+        agent = Agent(model=model)
+        agent.run("Hello")
+
+        # Stats should work without error
+        openrouter_wrapper.print_key_stats(api_key)
+        openrouter_wrapper.print_granular_stats(api_key, 'qwen/qwen3-coder:free')

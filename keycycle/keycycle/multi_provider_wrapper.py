@@ -3,7 +3,7 @@ import time
 import logging
 from pathlib import Path
 from threading import RLock
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -15,16 +15,23 @@ from rich.markup import escape
 from .utils import get_agno_model_class
 from .key_rotation.rotation_manager import RotatingKeyManager
 from .key_rotation.rotating_mixin import RotatingCredentialsMixin
-from .config.dataclasses import KeyUsage, RateLimits, UsageSnapshot
+from .config.dataclasses import KeyUsage, RateLimits, UsageSnapshot, KeyLimitOverride
 from .config.enums import RateLimitStrategy
 from .config.models import MODEL_LIMITS, PROVIDER_STRATEGIES
 from .config.constants import DEFAULT_COOLDOWN_SECONDS
-from .core.utils import validate_api_key
+from .core.utils import validate_api_key, get_key_suffix
 from .core.exceptions import NoAvailableKeyError, KeyNotFoundError
 from .core.backoff import ExponentialBackoff, BackoffConfig
 from .usage.db_logic import UsageDatabase
 from .config.log_config import default_logger
 from .adapters import RotatingOpenAIClient, RotatingAsyncOpenAIClient
+from .adapters.generic_adapter import (
+    create_rotating_client,
+    SyncGenericRotatingClient,
+    AsyncGenericRotatingClient,
+)
+
+T = TypeVar("T")
 
 class MultiProviderWrapper:
     """Wrapper for Agno models with rotating API keys"""
@@ -59,16 +66,46 @@ class MultiProviderWrapper:
     
     @classmethod
     def from_env(
-        cls, 
-        provider: str, 
-        default_model_id: str, 
+        cls,
+        provider: str,
+        default_model_id: str,
         env_file: Optional[str] = None,
         db_url: Optional[str] = None,
         db_env_var: Optional[str] = "TIDB_DB_URL",
-        debug: bool = False, 
+        debug: bool = False,
         logger = None,
+        key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]] = None,
+        key_tiers: Optional[Dict[int, str]] = None,
+        tier_limits: Optional[Dict[str, RateLimits]] = None,
         **kwargs
     ):
+        """
+        Create a MultiProviderWrapper from environment variables.
+
+        Args:
+            provider: Provider name (e.g., 'gemini', 'openai')
+            default_model_id: Default model identifier
+            env_file: Path to .env file (optional)
+            db_url: Database URL for usage persistence
+            db_env_var: Environment variable name for database URL
+            debug: Enable debug logging
+            logger: Custom logger instance
+            key_limits: Per-key rate limit overrides (index/suffix -> RateLimits or dict)
+            key_tiers: Map key indices to tier names (e.g., {0: 'free', 1: 'pro'})
+            tier_limits: Map tier names to rate limits (e.g., {'pro': RateLimits(...)})
+            **kwargs: Additional arguments passed to the wrapper
+
+        Example with tiers:
+            >>> wrapper = MultiProviderWrapper.from_env(
+            ...     provider='gemini',
+            ...     default_model_id='gemini-2.5-flash',
+            ...     key_tiers={0: 'free', 1: 'pro'},
+            ...     tier_limits={
+            ...         'free': RateLimits(5, 300, 20, 250000),
+            ...         'pro': RateLimits(100, 6000, 1000, 1000000),
+            ...     }
+            ... )
+        """
         try:
             model_class = get_agno_model_class(provider)
         except (ValueError, ImportError):
@@ -78,8 +115,19 @@ class MultiProviderWrapper:
 
         api_keys = cls.load_api_keys(provider, env_file)
         db_url = db_url or os.getenv(db_env_var)
-        return cls(provider, api_keys, default_model_id, 
-                   model_class, db_url, db_env_var, debug, logger, **kwargs)
+
+        # Convert tier config to key_limits
+        if key_tiers and tier_limits:
+            key_limits = key_limits or {}
+            for key_index, tier_name in key_tiers.items():
+                if tier_name in tier_limits:
+                    key_limits[key_index] = tier_limits[tier_name]
+
+        return cls(
+            provider, api_keys, default_model_id,
+            model_class, db_url, db_env_var, debug, logger,
+            key_limits=key_limits, **kwargs
+        )
     
     def __init__(
         self,
@@ -92,6 +140,7 @@ class MultiProviderWrapper:
         debug: bool = False,
         logger=None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
+        key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]] = None,
         **kwargs
     ):
         self.provider = provider.lower()
@@ -107,14 +156,17 @@ class MultiProviderWrapper:
             if not validate_api_key(key):
                 self.logger.warning("API key #%d appears invalid or is a placeholder", i + 1)
 
+        # Normalize key_limits: convert key identifiers (index/suffix/full key) to suffixes
+        self._key_limits: Dict[str, KeyLimitOverride] = self._normalize_key_limits(api_keys, key_limits)
+
         self.db = UsageDatabase(db_url, db_env_var)
         self.strategy = self.PROVIDER_STRATEGIES.get(self.provider, RateLimitStrategy.PER_MODEL)
         self.manager = RotatingKeyManager(
             api_keys, self.provider, self.strategy, self.db,
-            cooldown_seconds=cooldown_seconds
+            cooldown_seconds=cooldown_seconds,
+            limit_resolver=self._resolve_limits,
         )
-        self._model_cache = {}
-        self._model_cache_lock = RLock()  # Thread safety for model cache
+        self._model_cache_lock = RLock()  # Thread safety for RotatingClass creation
         self._RotatingClass = None
         self.console = Console()
 
@@ -130,8 +182,77 @@ class MultiProviderWrapper:
         status = "ENABLED" if enable else "DISABLED"
         self.logger.info("Debug logging %s for %s", status, self.provider)
 
-    def _resolve_limits(self, model_id: str) -> RateLimits:
+    def _normalize_key_limits(
+        self,
+        api_keys: List[str],
+        key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]]
+    ) -> Dict[str, KeyLimitOverride]:
+        """
+        Normalize key_limits by converting all identifiers to key suffixes.
+
+        Accepts:
+            - Integer index (0-based): Maps to the key at that position
+            - String suffix: Matched against the last N characters of each key
+            - Full key string: Exact match
+
+        Returns:
+            Dict mapping key suffixes to their limit overrides
+        """
+        if not key_limits:
+            return {}
+
+        normalized: Dict[str, KeyLimitOverride] = {}
+
+        for identifier, limits in key_limits.items():
+            if isinstance(identifier, int):
+                # Index-based: get the key at that position
+                if 0 <= identifier < len(api_keys):
+                    suffix = get_key_suffix(api_keys[identifier])
+                    normalized[suffix] = limits
+                else:
+                    self.logger.warning("key_limits index %d is out of range (0-%d)", identifier, len(api_keys) - 1)
+            elif isinstance(identifier, str):
+                # String: try exact match first, then suffix match
+                matched = False
+                for key in api_keys:
+                    if key == identifier or key.endswith(identifier):
+                        suffix = get_key_suffix(key)
+                        normalized[suffix] = limits
+                        matched = True
+                        break
+                if not matched:
+                    self.logger.warning("key_limits identifier '%s' did not match any API key", identifier[-8:])
+
+        return normalized
+
+    def _resolve_limits(self, model_id: str, key_suffix: Optional[str] = None) -> RateLimits:
+        """
+        Resolve rate limits for a model, optionally with per-key overrides.
+
+        Args:
+            model_id: The model identifier
+            key_suffix: Optional key suffix for per-key limit lookup
+
+        Returns:
+            RateLimits for the model/key combination
+        """
         mid = model_id or self.default_model_id
+
+        # Check key-specific overrides first
+        if key_suffix and self._key_limits:
+            override = self._key_limits.get(key_suffix)
+            if override:
+                if isinstance(override, RateLimits):
+                    return override
+                elif isinstance(override, dict):
+                    # Per-model limits for this key
+                    if mid in override:
+                        return override[mid]
+                    # Check for __default__ fallback
+                    if '__default__' in override:
+                        return override['__default__']
+
+        # Fall back to provider/model defaults from YAML config
         provider_limits = self.MODEL_LIMITS.get(self.provider, {})
         return provider_limits.get(mid, provider_limits.get('default', RateLimits(10, 100, 1000)))
 
@@ -222,14 +343,14 @@ class MultiProviderWrapper:
         )
 
     def get_async_openai_client(
-        self, 
-        estimated_tokens: int = 1000, 
-        max_retries: int = 5, 
+        self,
+        estimated_tokens: int = 1000,
+        max_retries: int = 5,
         **kwargs
     ) -> RotatingAsyncOpenAIClient:
         """
         Returns a rotating OpenAI client (Async)
-        
+
         Args:
             estimated_tokens: Estimated tokens per request for rate limiting
             max_retries: Maximum retries on rate limit errors
@@ -245,6 +366,78 @@ class MultiProviderWrapper:
             client_kwargs={**self.model_kwargs, **kwargs}
         )
 
+    def get_rotating_client(
+        self,
+        client_class: Type[T],
+        api_key_param: str = "api_key",
+        is_async: Optional[bool] = None,
+        usage_extractor: Optional[Callable[[Any], int]] = None,
+        estimated_tokens: int = 1000,
+        max_retries: int = 5,
+        model_param: str = "model",
+        **client_kwargs,
+    ) -> Union[SyncGenericRotatingClient[T], AsyncGenericRotatingClient[T]]:
+        """
+        Returns a rotating client that wraps any Python client class accepting api_key=.
+
+        This creates a drop-in replacement for the original client class that automatically
+        rotates API keys on rate limit errors.
+
+        Args:
+            client_class: The client class to wrap (e.g., Anthropic, TwelveLabs)
+            api_key_param: Name of the API key parameter in the client constructor
+            is_async: Whether the client is async. If None, auto-detected
+            usage_extractor: Custom function to extract token usage from responses.
+                If None, uses a default extractor that handles OpenAI, Anthropic,
+                and Cohere response patterns
+            estimated_tokens: Estimated tokens per request for rate limiting
+            max_retries: Maximum number of key rotations on rate limit errors
+            model_param: Name of the model parameter in API calls
+            **client_kwargs: Additional kwargs to pass to the client constructor
+
+        Returns:
+            A rotating client wrapper that can be used like the original client
+
+        Examples:
+            >>> # Anthropic
+            >>> from anthropic import Anthropic, AsyncAnthropic
+            >>> wrapper = MultiProviderWrapper.from_env(provider="anthropic", default_model_id="claude-3-sonnet")
+            >>> client = wrapper.get_rotating_client(Anthropic)
+            >>> response = client.messages.create(model="claude-3-sonnet", messages=[...], max_tokens=100)
+
+            >>> # Async variant
+            >>> async_client = wrapper.get_rotating_client(AsyncAnthropic)
+            >>> response = await async_client.messages.create(...)
+
+            >>> # TwelveLabs (sync-only)
+            >>> from twelvelabs import TwelveLabs
+            >>> wrapper = MultiProviderWrapper.from_env(provider="twelvelabs", default_model_id="marengo2.6")
+            >>> client = wrapper.get_rotating_client(TwelveLabs)
+            >>> indexes = client.index.list()
+
+            >>> # Custom usage extractor for Cohere
+            >>> client = wrapper.get_rotating_client(
+            ...     cohere.Client,
+            ...     usage_extractor=lambda r: (
+            ...         (r.meta.billed_units.input_tokens or 0) +
+            ...         (r.meta.billed_units.output_tokens or 0)
+            ...     )
+            ... )
+        """
+        return create_rotating_client(
+            client_class=client_class,
+            manager=self.manager,
+            limit_resolver=self._resolve_limits,
+            default_model=self.default_model_id,
+            api_key_param=api_key_param,
+            is_async=is_async,
+            usage_extractor=usage_extractor,
+            estimated_tokens=estimated_tokens,
+            max_retries=max_retries,
+            model_param=model_param,
+            **{**self.model_kwargs, **client_kwargs},
+        )
+
     def get_model(
         self,
         estimated_tokens: int = 1000,
@@ -254,7 +447,7 @@ class MultiProviderWrapper:
         key_id: Union[int, str] = None,
         pin_key: bool = False,
         **kwargs
-    ):
+    ) -> Any:
         """Dynamically creates a rotating model for ANY provider."""
         if self.model_class is None:
             raise RuntimeError(
@@ -504,7 +697,7 @@ class MultiProviderWrapper:
         data = self.manager.get_model_stats(model_id)
         
         self.console.print()
-        self.console.rule(self.console.rule(f"[bold]Model Report: [blue]{model_id}[/][/] ", style="#B9B9B9"))
+        self.console.rule(f"[bold]Model Report: [blue]{model_id}[/][/]", style="#B9B9B9")
         
         # 1. Total Summary
         s = data.total
