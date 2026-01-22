@@ -39,6 +39,7 @@ class ProviderConfig:
     """Internal config for a registered provider."""
     default_model: Optional[str] = None
     limits: Optional[Dict[str, RateLimits]] = None
+    excluded_kwargs: Optional[List[str]] = None
 
 
 @dataclass
@@ -252,6 +253,10 @@ class MultiClientWrapper:
         if api_key_param is None:
             api_key_param = manager.api_key_param
 
+        # Use config's excluded_kwargs as default if not specified
+        if excluded_kwargs is None:
+            excluded_kwargs = config.excluded_kwargs
+
         return create_rotating_client(
             client_class=client_class,
             manager=manager,
@@ -330,6 +335,9 @@ class MultiClientWrapper:
                 limits=config.limits,
                 api_key_param=config.api_key_param,
             )
+            # Store excluded_kwargs from env config
+            if config.excluded_kwargs:
+                instance._configs[provider.lower()].excluded_kwargs = config.excluded_kwargs
         return instance
 
     @staticmethod

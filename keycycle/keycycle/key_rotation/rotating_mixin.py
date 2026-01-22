@@ -109,8 +109,8 @@ class RotatingCredentialsMixin:
             return
 
         actual_tokens = 0
-        
-        if response:
+
+        if response and response.response_usage:
             actual_tokens = response.response_usage.total_tokens
 
         # Fallback: If no usage found (or streaming), use the estimate
