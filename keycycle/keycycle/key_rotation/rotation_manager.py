@@ -2,6 +2,7 @@ import time
 import atexit
 import threading
 from threading import Lock, Event
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..config.dataclasses import (
@@ -17,7 +18,7 @@ from ..config.constants import (
     HISTORY_LOOKBACK_SECONDS,
     DEFAULT_COOLDOWN_SECONDS,
 )
-from ..core.utils import get_key_suffix
+from ..core.utils import get_key_suffix, KeyEntry, normalize_key_entries
 from ..usage.usage_logger import AsyncUsageLogger
 from ..usage.db_logic import UsageDatabase
 
@@ -26,20 +27,28 @@ class RotatingKeyManager:
 
     def __init__(
         self,
-        api_keys: List[str],
+        api_keys: List[KeyEntry],
         provider_name: str,
         strategy: RateLimitStrategy,
         db: UsageDatabase,
-        logger=None,
+        logger: Optional[logging.Logger] = None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         limit_resolver: Optional[Callable[[str, Optional[str]], RateLimits]] = None,
+        api_key_param: str = "api_key",
     ):
         self.provider_name = provider_name
         self.logger = logger or default_logger
         self.strategy = strategy
         self.cooldown_seconds = cooldown_seconds
         self.limit_resolver = limit_resolver
-        self.keys = [KeyUsage(api_key=k, strategy=strategy) for k in api_keys]
+        self.api_key_param = api_key_param
+
+        # Normalize key entries and create KeyUsage objects with params
+        normalized = normalize_key_entries(api_keys, api_key_param)
+        self.keys = [
+            KeyUsage(api_key=primary, strategy=strategy, params=params)
+            for primary, params in normalized
+        ]
         self.current_index = 0
         self.lock = Lock()
 

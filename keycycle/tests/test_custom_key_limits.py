@@ -8,14 +8,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 try:
     from keycycle.config.dataclasses import RateLimits, KeyLimitOverride
-    from keycycle.multi_provider_wrapper import MultiProviderWrapper
+    from keycycle.legacy_multi_provider_wrapper import MultiProviderWrapper
     from keycycle.key_rotation.rotation_manager import RotatingKeyManager
     from keycycle.config.enums import RateLimitStrategy
     from keycycle.core.utils import get_key_suffix
 except ImportError:
     # Fallback for different path structures or if run directly
     from keycycle.keycycle.config.dataclasses import RateLimits, KeyLimitOverride
-    from keycycle.keycycle.multi_provider_wrapper import MultiProviderWrapper
+    from keycycle.keycycle.legacy_multi_provider_wrapper import MultiProviderWrapper
     from keycycle.keycycle.key_rotation.rotation_manager import RotatingKeyManager
     from keycycle.keycycle.config.enums import RateLimitStrategy
     from keycycle.keycycle.core.utils import get_key_suffix
@@ -40,7 +40,7 @@ class TestKeyLimitNormalization(unittest.TestCase):
         limits = RateLimits(100, 6000, 10000, 1000000)
         key_limits = {0: limits, 1: limits}
 
-        result = MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, key_limits)
+        result = wrapper._normalize_key_limits_internal(self.api_keys, key_limits)
 
         # Suffix for key 0 should be "AAAAAAAA"
         self.assertIn("AAAAAAAA", result)
@@ -58,7 +58,7 @@ class TestKeyLimitNormalization(unittest.TestCase):
         # Use partial suffix to match
         key_limits = {"BBBBBBBB": limits}
 
-        result = MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, key_limits)
+        result = wrapper._normalize_key_limits_internal(self.api_keys, key_limits)
 
         self.assertIn("BBBBBBBB", result)
         self.assertEqual(result["BBBBBBBB"], limits)
@@ -71,7 +71,7 @@ class TestKeyLimitNormalization(unittest.TestCase):
         limits = RateLimits(50, 3000, 5000, 500000)
         key_limits = {"sk-test-key-three-CCCCCCCC": limits}
 
-        result = MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, key_limits)
+        result = wrapper._normalize_key_limits_internal(self.api_keys, key_limits)
 
         self.assertIn("CCCCCCCC", result)
         self.assertEqual(result["CCCCCCCC"], limits)
@@ -84,7 +84,7 @@ class TestKeyLimitNormalization(unittest.TestCase):
         limits = RateLimits(100, 6000, 10000)
         key_limits = {99: limits}  # Out of range
 
-        result = MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, key_limits)
+        result = wrapper._normalize_key_limits_internal(self.api_keys, key_limits)
 
         # Result should be empty
         self.assertEqual(result, {})
@@ -99,7 +99,7 @@ class TestKeyLimitNormalization(unittest.TestCase):
         limits = RateLimits(100, 6000, 10000)
         key_limits = {"ZZZZZZZZ": limits}  # Does not match any key
 
-        result = MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, key_limits)
+        result = wrapper._normalize_key_limits_internal(self.api_keys, key_limits)
 
         # Result should be empty
         self.assertEqual(result, {})
@@ -112,11 +112,11 @@ class TestKeyLimitNormalization(unittest.TestCase):
         wrapper.logger = MagicMock()
 
         self.assertEqual(
-            MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, None),
+            wrapper._normalize_key_limits_internal(self.api_keys, None),
             {}
         )
         self.assertEqual(
-            MultiProviderWrapper._normalize_key_limits(wrapper, self.api_keys, {}),
+            wrapper._normalize_key_limits_internal(self.api_keys, {}),
             {}
         )
 
@@ -142,11 +142,11 @@ class TestResolveLimits(unittest.TestCase):
         wrapper.MODEL_LIMITS = {"test": {"default": RateLimits(5, 300, 20)}}
 
         # With key suffix that has override
-        result = wrapper._resolve_limits("test-model", "AAAAAAAA")
+        result = wrapper._resolve_limits_internal("test-model", "AAAAAAAA")
         self.assertEqual(result, override_limits)
 
         # With key suffix that has NO override, should fall back to defaults
-        result = wrapper._resolve_limits("test-model", "BBBBBBBB")
+        result = wrapper._resolve_limits_internal("test-model", "BBBBBBBB")
         self.assertEqual(result.requests_per_minute, 5)
 
     def test_resolve_with_key_override_per_model(self):
@@ -170,11 +170,11 @@ class TestResolveLimits(unittest.TestCase):
         wrapper.MODEL_LIMITS = {"test": {"default": RateLimits(5, 300, 20)}}
 
         # Test specific model overrides
-        self.assertEqual(wrapper._resolve_limits("model-a", "AAAAAAAA"), model_a_limits)
-        self.assertEqual(wrapper._resolve_limits("model-b", "AAAAAAAA"), model_b_limits)
+        self.assertEqual(wrapper._resolve_limits_internal("model-a", "AAAAAAAA"), model_a_limits)
+        self.assertEqual(wrapper._resolve_limits_internal("model-b", "AAAAAAAA"), model_b_limits)
 
         # Test __default__ fallback for unknown model on this key
-        self.assertEqual(wrapper._resolve_limits("model-c", "AAAAAAAA"), default_for_key)
+        self.assertEqual(wrapper._resolve_limits_internal("model-c", "AAAAAAAA"), default_for_key)
 
     def test_resolve_without_key_suffix(self):
         """Test resolving limits when no key_suffix is provided."""
@@ -186,7 +186,7 @@ class TestResolveLimits(unittest.TestCase):
         wrapper.MODEL_LIMITS = {"test": {"default": RateLimits(5, 300, 20)}}
 
         # Without key suffix, should use provider defaults
-        result = wrapper._resolve_limits("test-model", None)
+        result = wrapper._resolve_limits_internal("test-model", None)
         self.assertEqual(result.requests_per_minute, 5)
 
     def test_resolve_no_overrides(self):
@@ -198,7 +198,7 @@ class TestResolveLimits(unittest.TestCase):
         wrapper._key_limits = {}
         wrapper.MODEL_LIMITS = {"test": {"test-model": RateLimits(10, 600, 100)}}
 
-        result = wrapper._resolve_limits("test-model", "AAAAAAAA")
+        result = wrapper._resolve_limits_internal("test-model", "AAAAAAAA")
         self.assertEqual(result.requests_per_minute, 10)
 
 

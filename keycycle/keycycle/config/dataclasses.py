@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from .enums import RateLimitStrategy
 from .constants import (
     SECONDS_PER_MINUTE, SECONDS_PER_HOUR, SECONDS_PER_DAY,
@@ -157,9 +157,16 @@ class KeyUsage:
     """Represents an API Key and holds multiple UsageBuckets (one per model)"""
     api_key: str
     strategy: RateLimitStrategy
+    params: Dict[str, Any] = field(default_factory=dict)
     buckets: Dict[str, UsageBucket] = field(default_factory=lambda: defaultdict(UsageBucket))
     global_bucket: UsageBucket = field(default_factory=UsageBucket)
     last_429: float = 0.0
+
+    def get_client_params(self) -> Dict[str, Any]:
+        """Returns all params for client instantiation."""
+        if self.params:
+            return dict(self.params)
+        return {"api_key": self.api_key}
     
     def record_usage(self, model_id: str, tokens: int, timestamp: float = None):
         ts = timestamp if timestamp else time.time()

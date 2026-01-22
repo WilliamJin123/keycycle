@@ -1,16 +1,19 @@
 import atexit
+import logging
 import queue
 import threading
 import time
+from typing import Optional
 
 from .db_logic import UsageDatabase
 from ..config.log_config import default_logger
+from ..config.constants import USAGE_LOG_BATCH_SIZE
 from ..core.utils import get_key_suffix
 
 # --- ASYNC LOGGER ---
 class AsyncUsageLogger:
     """Decouples Turso DB writes from the main thread using batching."""
-    def __init__(self, db: UsageDatabase, logger = None):
+    def __init__(self, db: UsageDatabase, logger: Optional[logging.Logger] = None):
         self.db = db
         self.queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -41,8 +44,8 @@ class AsyncUsageLogger:
                     "tokens": tokens
                 })
                 
-                # Drain queue up to 50 items to batch write
-                while len(batch) < 50:
+                # Drain queue up to USAGE_LOG_BATCH_SIZE items to batch write
+                while len(batch) < USAGE_LOG_BATCH_SIZE:
                     try:
                         r = self.queue.get_nowait()
                         p, m, k, t, tok = r

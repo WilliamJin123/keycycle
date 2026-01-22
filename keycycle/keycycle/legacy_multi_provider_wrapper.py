@@ -19,7 +19,14 @@ from .config.dataclasses import KeyUsage, RateLimits, UsageSnapshot, KeyLimitOve
 from .config.enums import RateLimitStrategy
 from .config.models import MODEL_LIMITS, PROVIDER_STRATEGIES
 from .config.constants import DEFAULT_COOLDOWN_SECONDS
-from .core.utils import validate_api_key, get_key_suffix
+from .core.utils import (
+    validate_api_key,
+    get_key_suffix,
+    KeyEntry,
+    load_api_keys as _load_api_keys,
+    normalize_key_limits as _normalize_key_limits,
+    resolve_limits as _resolve_limits,
+)
 from .core.exceptions import NoAvailableKeyError, KeyNotFoundError
 from .core.backoff import ExponentialBackoff, BackoffConfig
 from .usage.db_logic import UsageDatabase
@@ -40,29 +47,32 @@ class MultiProviderWrapper:
     MODEL_LIMITS = MODEL_LIMITS
     
     @staticmethod
-    def load_api_keys(provider: str, env_file: Optional[str] = None) -> List[str]:
-        """Load API keys from environment variables."""
-        if env_file:
-            env_path = Path(env_file).resolve()
-        else:
-            env_path = Path.cwd() / ".env"
-        load_dotenv(dotenv_path=env_path, override=True)
-        num_keys_var = f"NUM_{provider.upper()}"
-        num_keys = os.getenv(num_keys_var)
-        if not num_keys:
-            raise ValueError(f"Environment variable '{num_keys_var}' not found.")
-        try:
-            num_keys = int(num_keys)
-        except ValueError:
-            raise ValueError(f"'{num_keys_var}' must be an integer, got: {num_keys}")
+    def load_api_keys(
+        provider: str,
+        env_file: Optional[str] = None,
+        extra_params: Optional[List[str]] = None,
+    ) -> List[KeyEntry]:
+        """
+        Load API keys from environment variables.
 
-        api_keys = []
-        for i in range(1, num_keys + 1):
-            key_var = f"{provider.upper()}_API_KEY_{i}"
-            key = os.getenv(key_var)
-            if not key: raise ValueError(f"Missing API key: {provider.upper()}_API_KEY_{i}")
-            api_keys.append(key)
-        return api_keys
+        Args:
+            provider: Provider name (e.g., 'twelvelabs', 'anthropic')
+            env_file: Path to .env file (optional)
+            extra_params: List of extra parameter names to load alongside API keys.
+                For each param, loads {PROVIDER}_{PARAM}_N environment variables.
+
+        Returns:
+            List of key entries. If extra_params is provided, returns list of dicts
+            with api_key and extra params. Otherwise returns list of strings.
+
+        Example:
+            >>> # With extra_params=["index_id"], loads:
+            >>> # TWELVELABS_API_KEY_1, TWELVELABS_INDEX_ID_1
+            >>> # TWELVELABS_API_KEY_2, TWELVELABS_INDEX_ID_2
+            >>> keys = MultiProviderWrapper.load_api_keys("twelvelabs", extra_params=["index_id"])
+            >>> # Returns: [{"api_key": "key1", "index_id": "idx1"}, ...]
+        """
+        return _load_api_keys(provider, env_file, extra_params)
     
     @classmethod
     def from_env(
@@ -73,10 +83,11 @@ class MultiProviderWrapper:
         db_url: Optional[str] = None,
         db_env_var: Optional[str] = "TIDB_DB_URL",
         debug: bool = False,
-        logger = None,
+        logger: Optional[logging.Logger] = None,
         key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]] = None,
         key_tiers: Optional[Dict[int, str]] = None,
         tier_limits: Optional[Dict[str, RateLimits]] = None,
+        extra_params: Optional[List[str]] = None,
         **kwargs
     ):
         """
@@ -93,6 +104,8 @@ class MultiProviderWrapper:
             key_limits: Per-key rate limit overrides (index/suffix -> RateLimits or dict)
             key_tiers: Map key indices to tier names (e.g., {0: 'free', 1: 'pro'})
             tier_limits: Map tier names to rate limits (e.g., {'pro': RateLimits(...)})
+            extra_params: List of extra parameter names to load alongside API keys.
+                For each param, loads {PROVIDER}_{PARAM}_N environment variables.
             **kwargs: Additional arguments passed to the wrapper
 
         Example with tiers:
@@ -105,6 +118,13 @@ class MultiProviderWrapper:
             ...         'pro': RateLimits(100, 6000, 1000, 1000000),
             ...     }
             ... )
+
+        Example with extra_params (TwelveLabs with index_id):
+            >>> wrapper = MultiProviderWrapper.from_env(
+            ...     provider='twelvelabs',
+            ...     default_model_id='pegasus-1',
+            ...     extra_params=['index_id'],
+            ... )
         """
         try:
             model_class = get_agno_model_class(provider)
@@ -113,7 +133,7 @@ class MultiProviderWrapper:
             # We proceed without a model class, allowing only OpenAI client usage.
             model_class = None
 
-        api_keys = cls.load_api_keys(provider, env_file)
+        api_keys = cls.load_api_keys(provider, env_file, extra_params)
         db_url = db_url or os.getenv(db_env_var)
 
         # Convert tier config to key_limits
@@ -132,13 +152,13 @@ class MultiProviderWrapper:
     def __init__(
         self,
         provider: str,
-        api_keys: List[str],
+        api_keys: List[KeyEntry],
         default_model_id: str,
         model_class: Optional[Any] = None,
         db_url: Optional[str] = None,
         db_env_var: Optional[str] = "TIDB_DB_URL",
         debug: bool = False,
-        logger=None,
+        logger: Optional[logging.Logger] = None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]] = None,
         **kwargs
@@ -151,20 +171,26 @@ class MultiProviderWrapper:
         self.cooldown_seconds = cooldown_seconds
         self.toggle_debug(debug)
 
+        # Extract primary keys for validation (handle both str and dict entries)
+        primary_keys = [
+            entry if isinstance(entry, str) else entry.get("api_key", "")
+            for entry in api_keys
+        ]
+
         # Validate API keys
-        for i, key in enumerate(api_keys):
+        for i, key in enumerate(primary_keys):
             if not validate_api_key(key):
                 self.logger.warning("API key #%d appears invalid or is a placeholder", i + 1)
 
         # Normalize key_limits: convert key identifiers (index/suffix/full key) to suffixes
-        self._key_limits: Dict[str, KeyLimitOverride] = self._normalize_key_limits(api_keys, key_limits)
+        self._key_limits: Dict[str, KeyLimitOverride] = self._normalize_key_limits_internal(primary_keys, key_limits)
 
         self.db = UsageDatabase(db_url, db_env_var)
         self.strategy = self.PROVIDER_STRATEGIES.get(self.provider, RateLimitStrategy.PER_MODEL)
         self.manager = RotatingKeyManager(
             api_keys, self.provider, self.strategy, self.db,
             cooldown_seconds=cooldown_seconds,
-            limit_resolver=self._resolve_limits,
+            limit_resolver=self._resolve_limits_internal,
         )
         self._model_cache_lock = RLock()  # Thread safety for RotatingClass creation
         self._RotatingClass = None
@@ -182,7 +208,7 @@ class MultiProviderWrapper:
         status = "ENABLED" if enable else "DISABLED"
         self.logger.info("Debug logging %s for %s", status, self.provider)
 
-    def _normalize_key_limits(
+    def _normalize_key_limits_internal(
         self,
         api_keys: List[str],
         key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]]
@@ -198,34 +224,9 @@ class MultiProviderWrapper:
         Returns:
             Dict mapping key suffixes to their limit overrides
         """
-        if not key_limits:
-            return {}
+        return _normalize_key_limits(api_keys, key_limits, self.logger)
 
-        normalized: Dict[str, KeyLimitOverride] = {}
-
-        for identifier, limits in key_limits.items():
-            if isinstance(identifier, int):
-                # Index-based: get the key at that position
-                if 0 <= identifier < len(api_keys):
-                    suffix = get_key_suffix(api_keys[identifier])
-                    normalized[suffix] = limits
-                else:
-                    self.logger.warning("key_limits index %d is out of range (0-%d)", identifier, len(api_keys) - 1)
-            elif isinstance(identifier, str):
-                # String: try exact match first, then suffix match
-                matched = False
-                for key in api_keys:
-                    if key == identifier or key.endswith(identifier):
-                        suffix = get_key_suffix(key)
-                        normalized[suffix] = limits
-                        matched = True
-                        break
-                if not matched:
-                    self.logger.warning("key_limits identifier '%s' did not match any API key", identifier[-8:])
-
-        return normalized
-
-    def _resolve_limits(self, model_id: str, key_suffix: Optional[str] = None) -> RateLimits:
+    def _resolve_limits_internal(self, model_id: str, key_suffix: Optional[str] = None) -> RateLimits:
         """
         Resolve rate limits for a model, optionally with per-key overrides.
 
@@ -236,25 +237,15 @@ class MultiProviderWrapper:
         Returns:
             RateLimits for the model/key combination
         """
-        mid = model_id or self.default_model_id
-
-        # Check key-specific overrides first
-        if key_suffix and self._key_limits:
-            override = self._key_limits.get(key_suffix)
-            if override:
-                if isinstance(override, RateLimits):
-                    return override
-                elif isinstance(override, dict):
-                    # Per-model limits for this key
-                    if mid in override:
-                        return override[mid]
-                    # Check for __default__ fallback
-                    if '__default__' in override:
-                        return override['__default__']
-
-        # Fall back to provider/model defaults from YAML config
-        provider_limits = self.MODEL_LIMITS.get(self.provider, {})
-        return provider_limits.get(mid, provider_limits.get('default', RateLimits(10, 100, 1000)))
+        return _resolve_limits(
+            model_id=model_id,
+            default_model_id=self.default_model_id,
+            key_suffix=key_suffix,
+            key_limits=self._key_limits,
+            model_limits=self.MODEL_LIMITS,
+            provider=self.provider,
+            default_limits_factory=lambda: RateLimits(10, 100, 1000),
+        )
 
     def get_key_usage(
         self,
@@ -291,7 +282,7 @@ class MultiProviderWrapper:
             return key_usage
 
         # Standard Rotation Logic with Exponential Backoff
-        limits = self._resolve_limits(mid)
+        limits = self._resolve_limits_internal(mid)
         start = time.time()
         backoff = ExponentialBackoff(BackoffConfig(
             initial_interval=0.5,
@@ -334,7 +325,7 @@ class MultiProviderWrapper:
         """
         return RotatingOpenAIClient(
             manager=self.manager,
-            limit_resolver=self._resolve_limits,
+            limit_resolver=self._resolve_limits_internal,
             default_model=self.default_model_id,
             estimated_tokens=estimated_tokens,
             max_retries=max_retries,
@@ -358,7 +349,7 @@ class MultiProviderWrapper:
         """
         return RotatingAsyncOpenAIClient(
             manager=self.manager,
-            limit_resolver=self._resolve_limits,
+            limit_resolver=self._resolve_limits_internal,
             default_model=self.default_model_id,
             estimated_tokens=estimated_tokens,
             max_retries=max_retries,
@@ -375,6 +366,7 @@ class MultiProviderWrapper:
         estimated_tokens: int = 1000,
         max_retries: int = 5,
         model_param: str = "model",
+        excluded_kwargs: Optional[List[str]] = None,
         **client_kwargs,
     ) -> Union[SyncGenericRotatingClient[T], AsyncGenericRotatingClient[T]]:
         """
@@ -393,6 +385,8 @@ class MultiProviderWrapper:
             estimated_tokens: Estimated tokens per request for rate limiting
             max_retries: Maximum number of key rotations on rate limit errors
             model_param: Name of the model parameter in API calls
+            excluded_kwargs: List of kwarg names to exclude from client constructor.
+                Useful for clients that don't accept certain params (e.g., 'model' for TwelveLabs).
             **client_kwargs: Additional kwargs to pass to the client constructor
 
         Returns:
@@ -409,10 +403,10 @@ class MultiProviderWrapper:
             >>> async_client = wrapper.get_rotating_client(AsyncAnthropic)
             >>> response = await async_client.messages.create(...)
 
-            >>> # TwelveLabs (sync-only)
+            >>> # TwelveLabs with excluded_kwargs (doesn't accept 'model')
             >>> from twelvelabs import TwelveLabs
             >>> wrapper = MultiProviderWrapper.from_env(provider="twelvelabs", default_model_id="marengo2.6")
-            >>> client = wrapper.get_rotating_client(TwelveLabs)
+            >>> client = wrapper.get_rotating_client(TwelveLabs, excluded_kwargs=["model"])
             >>> indexes = client.index.list()
 
             >>> # Custom usage extractor for Cohere
@@ -427,7 +421,7 @@ class MultiProviderWrapper:
         return create_rotating_client(
             client_class=client_class,
             manager=self.manager,
-            limit_resolver=self._resolve_limits,
+            limit_resolver=self._resolve_limits_internal,
             default_model=self.default_model_id,
             api_key_param=api_key_param,
             is_async=is_async,
@@ -435,6 +429,7 @@ class MultiProviderWrapper:
             estimated_tokens=estimated_tokens,
             max_retries=max_retries,
             model_param=model_param,
+            excluded_kwargs=excluded_kwargs,
             **{**self.model_kwargs, **client_kwargs},
         )
 

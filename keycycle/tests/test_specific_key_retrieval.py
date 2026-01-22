@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 import pytest
 from unittest.mock import MagicMock
-from keycycle.multi_provider_wrapper import MultiProviderWrapper
+from keycycle.legacy_multi_provider_wrapper import MultiProviderWrapper
 from keycycle.core.exceptions import KeyNotFoundError
 
 @pytest.fixture(scope="session", autouse=True)

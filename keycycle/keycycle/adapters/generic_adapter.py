@@ -14,6 +14,7 @@ from typing import (
     Any,
     AsyncGenerator,
     Callable,
+    FrozenSet,
     Generator,
     Generic,
     List,
@@ -29,6 +30,7 @@ from ..config.constants import (
     TEMP_RATE_LIMIT_INITIAL_DELAY,
     TEMP_RATE_LIMIT_MAX_DELAY,
     TEMP_RATE_LIMIT_MULTIPLIER,
+    KEY_ROTATION_DELAY_SECONDS,
 )
 from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
 from ..core.backoff import ExponentialBackoff, BackoffConfig
@@ -146,6 +148,36 @@ def default_usage_extractor(response: Any) -> int:
     return 0
 
 
+def get_valid_constructor_kwargs(client_class: Type) -> Optional[FrozenSet[str]]:
+    """
+    Inspect client class to determine valid constructor kwargs.
+
+    Returns:
+        FrozenSet of valid kwarg names, or None if client accepts **kwargs
+        (meaning introspection can't filter).
+    """
+    try:
+        sig = inspect.signature(client_class.__init__)
+    except (ValueError, TypeError):
+        return None
+
+    params = sig.parameters
+    valid_kwargs = set()
+
+    for name, param in params.items():
+        if name == 'self':
+            continue
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return None  # Accepts **kwargs, can't filter
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            valid_kwargs.add(name)
+
+    return frozenset(valid_kwargs) if valid_kwargs else None
+
+
 @dataclass
 class GenericClientConfig:
     """Configuration for a generic rotating client."""
@@ -174,6 +206,12 @@ class GenericClientConfig:
     client_kwargs: dict = field(default_factory=dict)
     """Additional kwargs to pass to the client constructor"""
 
+    excluded_kwargs: FrozenSet[str] = field(default_factory=frozenset)
+    """Kwargs to explicitly exclude from client constructor (manual exclusion layer)"""
+
+    valid_kwargs: Optional[FrozenSet[str]] = None
+    """Valid constructor kwargs from introspection. None means accept all (client uses **kwargs)."""
+
 
 class BaseGenericRotatingClient(Generic[T]):
     """Base class for generic rotating clients."""
@@ -200,10 +238,37 @@ class BaseGenericRotatingClient(Generic[T]):
         self.config = config
         self._usage_extractor = config.usage_extractor or default_usage_extractor
 
-    def _get_fresh_client(self, api_key: str) -> T:
-        """Create a fresh client instance with the given API key."""
-        kwargs = {self.config.api_key_param: api_key, **self.config.client_kwargs}
-        return self.config.client_class(**kwargs)
+    def _get_fresh_client(self, key_usage: KeyUsage) -> T:
+        """Create a fresh client instance with the key's params."""
+        key_params = key_usage.get_client_params()
+
+        # Merge client_kwargs with key_params (key_params take precedence)
+        merged_kwargs = {**self.config.client_kwargs, **key_params}
+
+        # Layer 1: Apply manual exclusions
+        if self.config.excluded_kwargs:
+            merged_kwargs = {
+                k: v for k, v in merged_kwargs.items()
+                if k not in self.config.excluded_kwargs
+            }
+
+        # Layer 2: Apply introspection filter (if available)
+        if self.config.valid_kwargs is not None:
+            final_kwargs = {
+                k: v for k, v in merged_kwargs.items()
+                if k in self.config.valid_kwargs
+            }
+            # Log filtered kwargs for debugging
+            filtered = set(merged_kwargs.keys()) - set(final_kwargs.keys())
+            if filtered:
+                logger.debug(
+                    "Introspection filtered kwargs for %s: %s",
+                    self.config.client_class.__name__, filtered
+                )
+        else:
+            final_kwargs = merged_kwargs
+
+        return self.config.client_class(**final_kwargs)
 
     def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int) -> None:
         """Record usage for a key."""
@@ -248,7 +313,7 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
 
             for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
                 try:
-                    real_client = self._get_fresh_client(key_usage.api_key)
+                    real_client = self._get_fresh_client(key_usage)
 
                     # Navigate to the target method
                     target = real_client
@@ -287,7 +352,7 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                         )
                         key_usage.trigger_cooldown()
                         self.manager.force_rotate_index()
-                        time.sleep(0.5)
+                        time.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
                     self._record_usage(key_usage, model_id, 0)
@@ -309,13 +374,13 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
         self, generator: Generator, key_usage: KeyUsage, model_id: str
     ) -> Generator:
         """Wrap a streaming response to track usage and handle errors."""
-        accumulated_tokens = 0
+        final_tokens = 0
         try:
             for chunk in generator:
                 # Try to extract usage from streaming chunks
                 chunk_tokens = self._extract_usage(chunk)
                 if chunk_tokens:
-                    accumulated_tokens += chunk_tokens
+                    final_tokens = chunk_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):
@@ -327,7 +392,7 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, accumulated_tokens)
+            self._record_usage(key_usage, model_id, final_tokens)
 
 
 class SyncGenericProxyHelper:
@@ -369,7 +434,7 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
 
             for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
                 try:
-                    real_client = self._get_fresh_client(key_usage.api_key)
+                    real_client = self._get_fresh_client(key_usage)
 
                     # Navigate to the target method
                     target = real_client
@@ -406,7 +471,7 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                         )
                         key_usage.trigger_cooldown()
                         self.manager.force_rotate_index()
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
                     self._record_usage(key_usage, model_id, 0)
@@ -428,13 +493,13 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
         self, generator: AsyncGenerator, key_usage: KeyUsage, model_id: str
     ) -> AsyncGenerator:
         """Wrap an async streaming response to track usage and handle errors."""
-        accumulated_tokens = 0
+        final_tokens = 0
         try:
             async for chunk in generator:
                 # Try to extract usage from streaming chunks
                 chunk_tokens = self._extract_usage(chunk)
                 if chunk_tokens:
-                    accumulated_tokens += chunk_tokens
+                    final_tokens = chunk_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):
@@ -446,7 +511,7 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, accumulated_tokens)
+            self._record_usage(key_usage, model_id, final_tokens)
 
 
 class AsyncGenericProxyHelper:
@@ -474,6 +539,7 @@ def create_rotating_client(
     estimated_tokens: int = 1000,
     max_retries: int = 5,
     model_param: str = "model",
+    excluded_kwargs: Optional[List[str]] = None,
     **client_kwargs,
 ) -> Union[SyncGenericRotatingClient[T], AsyncGenericRotatingClient[T]]:
     """
@@ -490,6 +556,7 @@ def create_rotating_client(
         estimated_tokens: Estimated tokens per request for rate limiting
         max_retries: Maximum number of key rotations on rate limit errors
         model_param: Name of the model parameter in API calls
+        excluded_kwargs: List of kwarg names to explicitly exclude from client constructor
         **client_kwargs: Additional kwargs to pass to the client constructor
 
     Returns:
@@ -504,10 +571,23 @@ def create_rotating_client(
         ...     default_model="claude-3-sonnet",
         ... )
         >>> response = client.messages.create(...)
+
+        >>> # With excluded_kwargs for clients that don't accept certain params
+        >>> from twelvelabs import TwelveLabs
+        >>> client = create_rotating_client(
+        ...     TwelveLabs,
+        ...     manager=wrapper.manager,
+        ...     limit_resolver=wrapper._resolve_limits,
+        ...     default_model="pegasus-1",
+        ...     excluded_kwargs=["model"],  # TwelveLabs doesn't accept model
+        ... )
     """
     # Auto-detect async if not specified
     if is_async is None:
         is_async = detect_async_client(client_class)
+
+    # Introspect valid constructor kwargs
+    valid_kwargs = get_valid_constructor_kwargs(client_class)
 
     config = GenericClientConfig(
         client_class=client_class,
@@ -518,6 +598,8 @@ def create_rotating_client(
         max_retries=max_retries,
         model_param=model_param,
         client_kwargs=client_kwargs,
+        excluded_kwargs=frozenset(excluded_kwargs or []),
+        valid_kwargs=valid_kwargs,
     )
 
     if is_async:

@@ -9,6 +9,7 @@ from ..config.constants import (
     TEMP_RATE_LIMIT_INITIAL_DELAY,
     TEMP_RATE_LIMIT_MAX_DELAY,
     TEMP_RATE_LIMIT_MULTIPLIER,
+    KEY_ROTATION_DELAY_SECONDS,
 )
 from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
 from ..core.backoff import ExponentialBackoff, BackoffConfig
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import openai
-    from openai import OpenAI, AsyncOpenAI, RateLimitError, APIError
+    from openai import OpenAI, AsyncOpenAI, RateLimitError
     HAS_OPENAI = True
 except ImportError:
     HAS_OPENAI = False
@@ -28,7 +29,6 @@ except ImportError:
     class AsyncOpenAI:
         pass
     RateLimitError = Exception
-    APIError = Exception
 
 PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
@@ -122,6 +122,9 @@ class RotatingOpenAIClient(BaseRotatingClient):
             kwargs['model'] = model_id
         limits = self.limit_resolver(model_id, None)
 
+        if kwargs.get('stream', False) and 'stream_options' not in kwargs:
+            kwargs['stream_options'] = {"include_usage": True}
+
         for attempt in range(self.max_retries + 1):
             key_usage = self.manager.get_key(model_id, limits, self.estimated_tokens)
             if not key_usage:
@@ -170,11 +173,11 @@ class RotatingOpenAIClient(BaseRotatingClient):
                         )
                         key_usage.trigger_cooldown()
                         self.manager.force_rotate_index()
-                        time.sleep(0.5)
+                        time.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
                     self._record_usage(key_usage, model_id, 0)
-                    raise e
+                    raise
             else:
                 # Inner loop exhausted without success - continue to next key
                 if attempt < self.max_retries:
@@ -189,11 +192,11 @@ class RotatingOpenAIClient(BaseRotatingClient):
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     def _wrap_stream(self, generator: Generator, key_usage: KeyUsage, model_id: str):
-        accumulated_tokens = 0
+        final_tokens = 0
         try:
             for chunk in generator:
                 if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_tokens += chunk.usage.total_tokens
+                    final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):
@@ -205,7 +208,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, accumulated_tokens)
+            self._record_usage(key_usage, model_id, final_tokens)
 
 class SyncProxyHelper:
     def __init__(self, client: RotatingOpenAIClient, path: List[str]):
@@ -285,11 +288,11 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                         )
                         key_usage.trigger_cooldown()
                         self.manager.force_rotate_index()
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
                     self._record_usage(key_usage, model_id, 0)
-                    raise e
+                    raise
             else:
                 # Inner loop exhausted without success - continue to next key
                 if attempt < self.max_retries:
@@ -304,11 +307,11 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     async def _wrap_stream(self, generator: AsyncGenerator, key_usage: KeyUsage, model_id: str):
-        accumulated_tokens = 0
+        final_tokens = 0
         try:
             async for chunk in generator:
                 if hasattr(chunk, 'usage') and chunk.usage:
-                    accumulated_tokens += chunk.usage.total_tokens
+                    final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
             if is_rate_limit_error(e):
@@ -320,7 +323,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, accumulated_tokens)
+            self._record_usage(key_usage, model_id, final_tokens)
 
 class AsyncProxyHelper:
     def __init__(self, client: RotatingAsyncOpenAIClient, path: List[str]):

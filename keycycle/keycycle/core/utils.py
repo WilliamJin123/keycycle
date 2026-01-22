@@ -1,7 +1,58 @@
 """Shared utility functions for keycycle."""
-from typing import FrozenSet
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple, Union
+
+from dotenv import load_dotenv
 
 from ..config.constants import KEY_SUFFIX_LENGTH
+
+
+# Type alias for key entries: either a string API key or a dict with params
+KeyEntry = Union[str, Dict[str, Any]]
+
+
+def normalize_key_entry(entry: KeyEntry, api_key_param: str = "api_key") -> Tuple[str, Dict[str, Any]]:
+    """
+    Normalize a key entry to (primary_key, params_dict).
+
+    Args:
+        entry: Either a string API key or a dict containing api_key and other params
+        api_key_param: Name of the API key parameter in the dict (default: "api_key")
+
+    Returns:
+        Tuple of (primary_key, params_dict) where params_dict always contains the api_key_param
+
+    Raises:
+        ValueError: If entry is a dict but doesn't contain api_key_param
+        TypeError: If entry is neither str nor dict
+    """
+    if isinstance(entry, str):
+        return entry, {api_key_param: entry}
+    if isinstance(entry, dict):
+        if api_key_param not in entry:
+            raise ValueError(f"Key dict must contain '{api_key_param}'")
+        return entry[api_key_param], dict(entry)
+    raise TypeError(f"Key entry must be str or dict, got {type(entry).__name__}")
+
+
+def normalize_key_entries(
+    entries: List[KeyEntry],
+    api_key_param: str = "api_key"
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """
+    Normalize a list of key entries.
+
+    Args:
+        entries: List of key entries (strings or dicts)
+        api_key_param: Name of the API key parameter
+
+    Returns:
+        List of (primary_key, params_dict) tuples
+    """
+    return [normalize_key_entry(e, api_key_param) for e in entries]
 
 
 # Rate limit indicators for detection
@@ -175,8 +226,181 @@ def validate_api_key(api_key: str) -> bool:
     if any(pattern in key_lower for pattern in placeholder_patterns):
         return False
 
-    # Check if key is all x's or looks like a template
-    if key_lower.replace("-", "").replace("_", "").replace("sk", "") == "x" * (len(api_key) - api_key.count("-") - api_key.count("_") - api_key.count("sk")):
+    # Check if key is all x's or looks like a template (simplified with regex)
+    stripped = re.sub(r'[-_]|sk', '', key_lower)
+    if stripped and all(c == 'x' for c in stripped):
         return False
 
     return True
+
+
+def load_api_keys(
+    provider: str,
+    env_file: Optional[str] = None,
+    extra_params: Optional[List[str]] = None,
+    api_key_param: str = "api_key",
+) -> List[KeyEntry]:
+    """
+    Load API keys from environment variables.
+
+    Args:
+        provider: Provider name (e.g., 'twelvelabs', 'anthropic')
+        env_file: Path to .env file (optional)
+        extra_params: List of extra parameter names to load alongside API keys.
+            For each param, loads {PROVIDER}_{PARAM}_N environment variables.
+        api_key_param: Name for the API key in returned dicts (default: "api_key")
+
+    Returns:
+        List of key entries. If extra_params is provided, returns list of dicts
+        with api_key and extra params. Otherwise returns list of strings.
+
+    Environment variables format:
+        NUM_{PROVIDER}=N
+        {PROVIDER}_API_KEY_1, {PROVIDER}_API_KEY_2, ...
+        {PROVIDER}_{PARAM}_1, {PROVIDER}_{PARAM}_2, ... (for each extra_param)
+
+    Example:
+        >>> # With extra_params=["index_id"], loads:
+        >>> # TWELVELABS_API_KEY_1, TWELVELABS_INDEX_ID_1
+        >>> # TWELVELABS_API_KEY_2, TWELVELABS_INDEX_ID_2
+        >>> keys = load_api_keys("twelvelabs", extra_params=["index_id"])
+        >>> # Returns: [{"api_key": "key1", "index_id": "idx1"}, ...]
+    """
+    if env_file:
+        env_path = Path(env_file).resolve()
+    else:
+        env_path = Path.cwd() / ".env"
+    load_dotenv(dotenv_path=env_path, override=True)
+
+    num_keys_var = f"NUM_{provider.upper()}"
+    num_keys = os.getenv(num_keys_var)
+    if not num_keys:
+        raise ValueError(f"Environment variable '{num_keys_var}' not found.")
+    try:
+        num_keys = int(num_keys)
+    except ValueError:
+        raise ValueError(f"'{num_keys_var}' must be an integer, got: {num_keys}")
+
+    keys: List[KeyEntry] = []
+    for i in range(1, num_keys + 1):
+        key_var = f"{provider.upper()}_API_KEY_{i}"
+        key = os.getenv(key_var)
+        if not key:
+            raise ValueError(f"Missing API key: {key_var}")
+
+        if extra_params:
+            key_dict: Dict[str, Any] = {api_key_param: key}
+            for param in extra_params:
+                val = os.getenv(f"{provider.upper()}_{param.upper()}_{i}")
+                if val:
+                    key_dict[param] = val
+            keys.append(key_dict)
+        else:
+            keys.append(key)
+    return keys
+
+
+# Type alias for key limit overrides - can be imported from config.dataclasses
+KeyLimitOverride = Any  # Actually Union[RateLimits, Dict[str, RateLimits]] but avoiding circular import
+
+
+def normalize_key_limits(
+    api_keys: List[str],
+    key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]],
+    logger: Optional[logging.Logger] = None,
+) -> Dict[str, KeyLimitOverride]:
+    """
+    Normalize key_limits by converting all identifiers to key suffixes.
+
+    Accepts:
+        - Integer index (0-based): Maps to the key at that position
+        - String suffix: Matched against the last N characters of each key
+        - Full key string: Exact match
+
+    Args:
+        api_keys: List of primary API key strings
+        key_limits: Dict mapping identifiers to limit overrides
+        logger: Optional logger for warnings
+
+    Returns:
+        Dict mapping key suffixes to their limit overrides
+    """
+    if not key_limits:
+        return {}
+
+    normalized: Dict[str, KeyLimitOverride] = {}
+
+    for identifier, limits in key_limits.items():
+        if isinstance(identifier, int):
+            # Index-based: get the key at that position
+            if 0 <= identifier < len(api_keys):
+                suffix = get_key_suffix(api_keys[identifier])
+                normalized[suffix] = limits
+            elif logger:
+                logger.warning(
+                    "key_limits index %d is out of range (0-%d)",
+                    identifier, len(api_keys) - 1
+                )
+        elif isinstance(identifier, str):
+            # String: try exact match first, then suffix match
+            matched = False
+            for key in api_keys:
+                if key == identifier or key.endswith(identifier):
+                    suffix = get_key_suffix(key)
+                    normalized[suffix] = limits
+                    matched = True
+                    break
+            if not matched and logger:
+                logger.warning(
+                    "key_limits identifier '%s' did not match any API key",
+                    identifier[-8:]
+                )
+
+    return normalized
+
+
+def resolve_limits(
+    model_id: str,
+    default_model_id: str,
+    key_suffix: Optional[str],
+    key_limits: Dict[str, KeyLimitOverride],
+    model_limits: Dict[str, Dict[str, Any]],
+    provider: str,
+    default_limits_factory: Callable[[], Any],
+) -> Any:
+    """
+    Resolve rate limits for a model, optionally with per-key overrides.
+
+    Args:
+        model_id: The model identifier
+        default_model_id: Fallback model ID if model_id is None
+        key_suffix: Optional key suffix for per-key limit lookup
+        key_limits: Dict of key suffix -> limit overrides
+        model_limits: Dict of provider -> model -> RateLimits (e.g., MODEL_LIMITS)
+        provider: Provider name for looking up model limits
+        default_limits_factory: Callable that returns default RateLimits
+
+    Returns:
+        RateLimits for the model/key combination
+    """
+    from ..config.dataclasses import RateLimits
+
+    mid = model_id or default_model_id
+
+    # Check key-specific overrides first
+    if key_suffix and key_limits:
+        override = key_limits.get(key_suffix)
+        if override:
+            if isinstance(override, RateLimits):
+                return override
+            elif isinstance(override, dict):
+                # Per-model limits for this key
+                if mid in override:
+                    return override[mid]
+                # Check for __default__ fallback
+                if '__default__' in override:
+                    return override['__default__']
+
+    # Fall back to provider/model defaults
+    provider_limits = model_limits.get(provider, {})
+    return provider_limits.get(mid, provider_limits.get('default', default_limits_factory()))

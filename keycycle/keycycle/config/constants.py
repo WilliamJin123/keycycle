@@ -27,3 +27,9 @@ TEMP_RATE_LIMIT_MAX_RETRIES = 3
 TEMP_RATE_LIMIT_INITIAL_DELAY = 1.0  # seconds
 TEMP_RATE_LIMIT_MAX_DELAY = 10.0  # seconds
 TEMP_RATE_LIMIT_MULTIPLIER = 2.0
+
+# Key rotation delay (seconds to wait after rotating to a new key)
+KEY_ROTATION_DELAY_SECONDS = 0.5
+
+# Usage logging batch size
+USAGE_LOG_BATCH_SIZE = 50

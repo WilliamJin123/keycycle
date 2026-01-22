@@ -2,7 +2,7 @@ import asyncio
 import functools
 import logging
 import time
-from typing import AsyncIterator, Iterator, Optional, Union
+from typing import AsyncIterator, Iterator, Optional, Union, TYPE_CHECKING
 
 from ..config.dataclasses import KeyUsage
 from ..config.log_config import default_logger
@@ -31,7 +31,7 @@ class RotatingCredentialsMixin:
         rotating_estimated_tokens=1000,
         rotating_max_retries=5, 
         rotating_fixed_key_id: Union[int, str] = None,
-        logger = None,
+        logger: Optional[logging.Logger] = None,
         **kwargs):
         """
         Initializes rotation parameters and patches the model if necessary.
@@ -165,7 +165,7 @@ class RotatingCredentialsMixin:
                         key_usage.trigger_cooldown()
                         self.wrapper.manager.force_rotate_index()
                         break  # Break inner loop, continue outer with new key
-                    raise e
+                    raise
             else:
                 # Temp retries exhausted, move to next key
                 if attempt < limit:
@@ -211,7 +211,7 @@ class RotatingCredentialsMixin:
                         key_usage.trigger_cooldown()
                         self.wrapper.manager.force_rotate_index()
                         break  # Break inner loop, continue outer with new key
-                    raise e
+                    raise
             else:
                 # Temp retries exhausted, move to next key
                 if attempt < limit:
@@ -272,7 +272,7 @@ class RotatingCredentialsMixin:
                         key_usage.trigger_cooldown()
                         self.wrapper.manager.force_rotate_index()
                         break
-                    raise e
+                    raise
             else:
                 if attempt < limit:
                     key_usage.trigger_cooldown()
@@ -330,7 +330,7 @@ class RotatingCredentialsMixin:
                         key_usage.trigger_cooldown()
                         self.wrapper.manager.force_rotate_index()
                         break
-                    raise e
+                    raise
             else:
                 if attempt < limit:
                     key_usage.trigger_cooldown()
