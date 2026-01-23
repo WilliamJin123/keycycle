@@ -31,7 +31,7 @@ from .core.exceptions import NoAvailableKeyError, KeyNotFoundError
 from .core.backoff import ExponentialBackoff, BackoffConfig
 from .usage.db_logic import UsageDatabase
 from .config.log_config import default_logger
-from .adapters import RotatingOpenAIClient, RotatingAsyncOpenAIClient
+from .adapters.openai_adapter import RotatingOpenAIClient, RotatingAsyncOpenAIClient
 from .adapters.generic_adapter import (
     create_rotating_client,
     SyncGenericRotatingClient,

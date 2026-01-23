@@ -19,7 +19,6 @@ from .adapters.generic_adapter import (
     SyncGenericRotatingClient,
     AsyncGenericRotatingClient,
 )
-from .adapters.openai_adapter import RotatingAsyncOpenAIClient, RotatingOpenAIClient
 
 __all__ = [
     # New primary wrapper (multi-provider support)
@@ -32,8 +31,6 @@ __all__ = [
     "KeyLimitOverride",
     "KeyEntry",
     "RotatingKeyManager",
-    "RotatingAsyncOpenAIClient",
-    "RotatingOpenAIClient",
     # Generic rotating client
     "create_rotating_client",
     "detect_async_client",
