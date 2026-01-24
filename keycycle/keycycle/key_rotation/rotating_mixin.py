@@ -14,7 +14,17 @@ from ..config.constants import (
 )
 from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
 from ..core.backoff import ExponentialBackoff, BackoffConfig
-from agno.models.response import ModelResponse
+if TYPE_CHECKING:
+    from agno.models.response import ModelResponse
+
+
+class _UsageResponse:
+    """Minimal response holder for usage recording when agno is not available."""
+    __slots__ = ('response_usage',)
+
+    def __init__(self, usage=None):
+        self.response_usage = usage
+
 
 class RotatingCredentialsMixin:
     """
@@ -100,7 +110,7 @@ class RotatingCredentialsMixin:
     def _get_retry_limit(self) -> int:
         return min(self._max_retries, len(self.wrapper.manager.keys) - 1)
 
-    def _record_usage(self, key_obj: KeyUsage, response: Optional[ModelResponse]):
+    def _record_usage(self, key_obj: KeyUsage, response: Optional["ModelResponse"]):
         """
         Extracts usage from the response and reports it to the manager.
         Falls back to estimated_tokens if response is None or usage is missing.
@@ -132,7 +142,7 @@ class RotatingCredentialsMixin:
             multiplier=TEMP_RATE_LIMIT_MULTIPLIER,
         ))
 
-    def invoke(self, *args, **kwargs) -> ModelResponse:
+    def invoke(self, *args, **kwargs) -> "ModelResponse":
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -178,7 +188,7 @@ class RotatingCredentialsMixin:
                     continue
                 raise
 
-    async def ainvoke(self, *args, **kwargs) -> ModelResponse:
+    async def ainvoke(self, *args, **kwargs) -> "ModelResponse":
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -224,7 +234,7 @@ class RotatingCredentialsMixin:
                     continue
                 raise
     
-    def invoke_stream(self, *args, **kwargs) -> Iterator[ModelResponse]:
+    def invoke_stream(self, *args, **kwargs) -> Iterator["ModelResponse"]:
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -242,8 +252,7 @@ class RotatingCredentialsMixin:
                             final_usage = chunk.response_usage
                         yield chunk
                     if final_usage:
-                        dummy_response = ModelResponse()
-                        dummy_response.response_usage = final_usage
+                        dummy_response = _UsageResponse(final_usage)
                         self._record_usage(key_usage, dummy_response)
                     else:
                         # If the stream didn't return usage data, fallback to estimation
@@ -280,7 +289,7 @@ class RotatingCredentialsMixin:
                     continue
                 raise
 
-    async def ainvoke_stream(self, *args, **kwargs) -> AsyncIterator[ModelResponse]:
+    async def ainvoke_stream(self, *args, **kwargs) -> AsyncIterator["ModelResponse"]:
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -301,8 +310,7 @@ class RotatingCredentialsMixin:
 
                     # Stream completed successfully. Record usage.
                     if final_usage:
-                        dummy_response = ModelResponse()
-                        dummy_response.response_usage = final_usage
+                        dummy_response = _UsageResponse(final_usage)
                         self._record_usage(key_usage, dummy_response)
                     else:
                         self._record_usage(key_usage, None)
