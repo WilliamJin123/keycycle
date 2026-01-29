@@ -37,7 +37,7 @@ PROVIDER_BASE_URLS = {
     "cerebras": "https://api.cerebras.ai/v1",
     "groq": "https://api.groq.com/openai/v1",
     "cohere": "https://api.cohere.ai/compatibility/v1",
-
+    "moonshot": "https://api.moonshot.ai/v1",
 }
 
 class BaseRotatingClient:

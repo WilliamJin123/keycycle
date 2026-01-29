@@ -1,0 +1,59 @@
+# Moonshot API rate limits (dummy high limits)
+# Base URL: https://api.moonshot.ai/v1
+# Agno class: MoonShot (similar to OpenRouter special case)
+
+default:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2.5:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2-0905-preview:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2-0711-preview:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2-turbo-preview:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2-thinking:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000
+
+kimi-k2-thinking-turbo:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000

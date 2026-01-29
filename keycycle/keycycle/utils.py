@@ -12,7 +12,8 @@ def get_agno_model_class(provider: str):
         "gemini": "Gemini",
         "azure": "AzureOpenAI",
         "aws": "Bedrock",
-        "openrouter": "OpenRouter"
+        "openrouter": "OpenRouter",
+        "moonshot": "MoonShot"
     }
 
     class_name = overrides.get(p_low, p_low.capitalize())
