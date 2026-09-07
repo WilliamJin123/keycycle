@@ -23,7 +23,7 @@ class TestStreamsRecording:
         try:
             wrapper = MultiProviderWrapper.from_env(
                 provider='cerebras',
-                default_model_id='llama3.1-8b',
+                default_model_id='gpt-oss-120b',
                 env_file=str(ENV_PATH)
             )
             yield wrapper

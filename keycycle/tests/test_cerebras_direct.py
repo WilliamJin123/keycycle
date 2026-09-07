@@ -24,7 +24,7 @@ def test_cerebras_direct_access():
         # Initialize the wrapper (loads keys from env)
         wrapper = MultiProviderWrapper.from_env(
             provider="cerebras",
-            default_model_id="qwen-3-32b",
+            default_model_id="qwen-3.8-27b",
             env_file="./local.env"
         )
     except ValueError as e:
@@ -39,9 +39,9 @@ def test_cerebras_direct_access():
     
     # 2. Verify Attributes
     if hasattr(model, 'id'):
-        assert model.id == "qwen-3-32b"
+        assert model.id == "qwen-3.8-27b"
     elif hasattr(model, 'model'):
-        assert model.model == "qwen-3-32b"
+        assert model.model == "qwen-3.8-27b"
         
     # 3. Verify Mixin is present
     assert hasattr(model, 'wrapper')

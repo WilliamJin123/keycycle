@@ -161,6 +161,7 @@ class KeyUsage:
     buckets: Dict[str, UsageBucket] = field(default_factory=lambda: defaultdict(UsageBucket))
     global_bucket: UsageBucket = field(default_factory=UsageBucket)
     last_429: float = 0.0
+    dead: bool = False
 
     def get_client_params(self) -> Dict[str, Any]:
         """Returns all params for client instantiation."""
@@ -202,7 +203,9 @@ class KeyUsage:
 
 
     def is_cooling_down(self, cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS) -> bool:
-        """Returns True if the key is still in its cooldown penalty period."""
+        """Returns True if the key is still in its cooldown penalty period, or dead."""
+        if self.dead:
+            return True
         if self.last_429 == 0:
             return False
         return (time.time() - self.last_429) < cooldown_seconds
@@ -210,3 +213,13 @@ class KeyUsage:
     def trigger_cooldown(self):
         """Mark this key as rate-limited."""
         self.last_429 = time.time()
+
+    def mark_dead(self):
+        """
+        Permanently exclude this key from rotation for the lifetime of this process.
+
+        Used for errors a short cooldown can't fix - e.g. HTTP 402 payment_required
+        when a free-trial key's credits/quota are exhausted. Unlike trigger_cooldown(),
+        this never expires; the key stays dead until the process restarts.
+        """
+        self.dead = True

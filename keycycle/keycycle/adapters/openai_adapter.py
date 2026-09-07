@@ -11,7 +11,12 @@ from ..config.constants import (
     TEMP_RATE_LIMIT_MULTIPLIER,
     KEY_ROTATION_DELAY_SECONDS,
 )
-from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
+from ..core.utils import (
+    is_rate_limit_error,
+    is_temporary_rate_limit_error,
+    is_payment_required_error,
+    get_key_suffix,
+)
 from ..core.backoff import ExponentialBackoff, BackoffConfig
 from ..key_rotation.rotation_manager import RotatingKeyManager
 
@@ -165,6 +170,18 @@ class RotatingOpenAIClient(BaseRotatingClient):
                         time.sleep(delay)
                         continue  # Retry with SAME key
 
+                    # Payment required (quota/credits exhausted) - key is dead
+                    # for this process, rotate to next key
+                    if is_payment_required_error(e) and attempt < self.max_retries:
+                        logger.warning(
+                            "402/PaymentRequired hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
+                            model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
+                        )
+                        key_usage.mark_dead()
+                        self.manager.force_rotate_index()
+                        time.sleep(KEY_ROTATION_DELAY_SECONDS)
+                        break  # Break inner loop, continue outer loop with new key
+
                     # Hard rate limit - rotate to next key
                     if is_rate_limit_error(e) and attempt < self.max_retries:
                         logger.warning(
@@ -199,7 +216,14 @@ class RotatingOpenAIClient(BaseRotatingClient):
                     final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if is_rate_limit_error(e):
+            if is_payment_required_error(e):
+                logger.warning(
+                    "402/PaymentRequired hit during streaming for %s on key ...%s. Marking key dead.",
+                    model_id, get_key_suffix(key_usage.api_key)
+                )
+                key_usage.mark_dead()
+                self.manager.force_rotate_index()
+            elif is_rate_limit_error(e):
                 logger.warning(
                     "Rate limit hit during streaming for %s on key ...%s.",
                     model_id, get_key_suffix(key_usage.api_key)
@@ -280,6 +304,18 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                         await asyncio.sleep(delay)
                         continue  # Retry with SAME key
 
+                    # Payment required (quota/credits exhausted) - key is dead
+                    # for this process, rotate to next key
+                    if is_payment_required_error(e) and attempt < self.max_retries:
+                        logger.warning(
+                            "402/PaymentRequired hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
+                            model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
+                        )
+                        key_usage.mark_dead()
+                        self.manager.force_rotate_index()
+                        await asyncio.sleep(KEY_ROTATION_DELAY_SECONDS)
+                        break  # Break inner loop, continue outer loop with new key
+
                     # Hard rate limit - rotate to next key
                     if is_rate_limit_error(e) and attempt < self.max_retries:
                         logger.warning(
@@ -314,7 +350,14 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                     final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if is_rate_limit_error(e):
+            if is_payment_required_error(e):
+                logger.warning(
+                    "402/PaymentRequired hit during streaming for %s on key ...%s. Marking key dead.",
+                    model_id, get_key_suffix(key_usage.api_key)
+                )
+                key_usage.mark_dead()
+                self.manager.force_rotate_index()
+            elif is_rate_limit_error(e):
                 logger.warning(
                     "Rate limit hit during streaming for %s on key ...%s.",
                     model_id, get_key_suffix(key_usage.api_key)

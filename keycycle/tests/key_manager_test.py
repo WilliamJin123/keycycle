@@ -19,7 +19,7 @@ class TestKeyManagerIntegration:
     def cerebras_wrapper(self, load_env):
         """Create Cerebras wrapper."""
         try:
-            wrapper = MultiProviderWrapper.from_env("cerebras", 'llama3.1-8b', env_file=ENV_FILE)
+            wrapper = MultiProviderWrapper.from_env("cerebras", 'gpt-oss-120b', env_file=ENV_FILE)
             yield wrapper
             wrapper.manager.stop()
         except Exception as e:

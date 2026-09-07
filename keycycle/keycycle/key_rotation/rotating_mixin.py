@@ -12,7 +12,12 @@ from ..config.constants import (
     TEMP_RATE_LIMIT_MAX_DELAY,
     TEMP_RATE_LIMIT_MULTIPLIER,
 )
-from ..core.utils import is_rate_limit_error, is_temporary_rate_limit_error, get_key_suffix
+from ..core.utils import (
+    is_rate_limit_error,
+    is_temporary_rate_limit_error,
+    is_payment_required_error,
+    get_key_suffix,
+)
 from ..core.backoff import ExponentialBackoff, BackoffConfig
 if TYPE_CHECKING:
     from agno.models.response import ModelResponse
@@ -166,6 +171,17 @@ class RotatingCredentialsMixin:
                         time.sleep(delay)
                         continue  # Retry with SAME key
 
+                    # Payment required (quota/credits exhausted) - key is dead
+                    # for this process, rotate to next key
+                    if is_payment_required_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "402 Hit on key %s (Sync) [%s]. Marking key dead and rotating (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.mark_dead()
+                        self.wrapper.manager.force_rotate_index()
+                        break  # Break inner loop, continue outer with new key
+
                     # Hard rate limit - rotate key
                     if is_rate_limit_error(e) and attempt < limit:
                         self.logger.warning(
@@ -212,6 +228,17 @@ class RotatingCredentialsMixin:
                         await asyncio.sleep(delay)
                         continue  # Retry with SAME key
 
+                    # Payment required (quota/credits exhausted) - key is dead
+                    # for this process, rotate to next key
+                    if is_payment_required_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "402 Hit on key %s (Async) [%s]. Marking key dead and rotating (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.mark_dead()
+                        self.wrapper.manager.force_rotate_index()
+                        break  # Break inner loop, continue outer with new key
+
                     # Hard rate limit - rotate key
                     if is_rate_limit_error(e) and attempt < limit:
                         self.logger.warning(
@@ -233,7 +260,7 @@ class RotatingCredentialsMixin:
                     self.wrapper.manager.force_rotate_index()
                     continue
                 raise
-    
+
     def invoke_stream(self, *args, **kwargs) -> Iterator["ModelResponse"]:
         limit = self._get_retry_limit()
 
@@ -272,6 +299,15 @@ class RotatingCredentialsMixin:
                         )
                         time.sleep(delay)
                         continue
+
+                    if is_payment_required_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "402 Hit on key %s (Sync Stream) [%s]. Marking key dead and rotating (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.mark_dead()
+                        self.wrapper.manager.force_rotate_index()
+                        break
 
                     if is_rate_limit_error(e) and attempt < limit:
                         self.logger.warning(
@@ -329,6 +365,15 @@ class RotatingCredentialsMixin:
                         )
                         await asyncio.sleep(delay)
                         continue
+
+                    if is_payment_required_error(e) and attempt < limit:
+                        self.logger.warning(
+                            "402 Hit on key %s (Async Stream) [%s]. Marking key dead and rotating (%d/%d).",
+                            get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
+                        )
+                        key_usage.mark_dead()
+                        self.wrapper.manager.force_rotate_index()
+                        break
 
                     if is_rate_limit_error(e) and attempt < limit:
                         self.logger.warning(

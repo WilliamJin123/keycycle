@@ -66,7 +66,7 @@ class TestProviderKeyHealth:
             pytest.skip(f"CEREBRAS key {key_index} not configured (NUM_CEREBRAS={num_keys})")
 
         success, key_env, error = self._check_provider_key(
-            "CEREBRAS", Cerebras, "llama-3.3-70b", key_index
+            "CEREBRAS", Cerebras, "gpt-oss-120b", key_index
         )
         assert success, f"{key_env} failed: {error}"
 

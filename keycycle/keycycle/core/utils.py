@@ -92,6 +92,12 @@ AUTH_INDICATORS: FrozenSet[str] = frozenset([
     "invalid api key", "invalid_api_key", "expired"
 ])
 
+# Payment required indicators (e.g. free-tier quota/credits exhausted)
+PAYMENT_REQUIRED_STATUS_CODES = {402}
+PAYMENT_REQUIRED_INDICATORS: FrozenSet[str] = frozenset([
+    "402", "payment required", "payment_required",
+])
+
 
 def get_key_suffix(api_key: str, length: int = KEY_SUFFIX_LENGTH) -> str:
     """
@@ -174,6 +180,41 @@ def is_temporary_rate_limit_error(e: Exception) -> bool:
     # Check for temporary indicators
     if any(indicator in err_str for indicator in TEMPORARY_RATE_LIMIT_INDICATORS):
         return True
+
+    return False
+
+
+def is_payment_required_error(e: Exception) -> bool:
+    """
+    Detect HTTP 402 Payment Required errors (e.g. a Cerebras free-trial key
+    whose credits/quota have been exhausted).
+
+    Unlike rate limit errors, a 402 will not clear on its own after a short
+    cooldown - the key is exhausted for good (until credits are topped up),
+    so callers should treat the key as permanently dead for this process
+    rather than retrying it later.
+
+    Args:
+        e: The exception to check
+
+    Returns:
+        True if this appears to be a payment-required / quota-exhausted error
+    """
+    # Check status_code attribute
+    if hasattr(e, "status_code") and e.status_code in PAYMENT_REQUIRED_STATUS_CODES:
+        return True
+
+    # Check string representation
+    err_str = str(e).lower()
+    if any(indicator in err_str for indicator in PAYMENT_REQUIRED_INDICATORS):
+        return True
+
+    # Check body/response for embedded error info
+    body = getattr(e, "body", None) or getattr(e, "response", None)
+    if body:
+        body_str = str(body).lower()
+        if any(indicator in body_str for indicator in PAYMENT_REQUIRED_INDICATORS):
+            return True
 
     return False
 

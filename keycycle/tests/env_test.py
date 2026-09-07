@@ -20,7 +20,7 @@ class TestEnvironmentIntegration:
         try:
             wrapper = MultiProviderWrapper.from_env(
                 provider='cerebras',
-                default_model_id='llama-3.3-70b',
+                default_model_id='gpt-oss-120b',
                 env_file=ENV_PATH,
                 temperature=0.7
             )
@@ -78,7 +78,7 @@ class TestEnvironmentIntegration:
         """Test Cerebras wrapper initializes correctly."""
         assert cerebras_wrapper is not None
         assert cerebras_wrapper.provider == 'cerebras'
-        assert cerebras_wrapper.default_model_id == 'llama-3.3-70b'
+        assert cerebras_wrapper.default_model_id == 'gpt-oss-120b'
 
     @pytest.mark.integration
     def test_groq_wrapper_initialization(self, groq_wrapper):
