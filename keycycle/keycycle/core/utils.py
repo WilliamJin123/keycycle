@@ -323,16 +323,14 @@ def load_api_keys(
     except ValueError:
         raise ValueError(f"'{num_keys_var}' must be an integer, got: {num_keys_raw}")
 
-    # A key fleet isn't always numbered contiguously from 1..N -- a retired
-    # or never-issued key can leave a gap (e.g. a provider's *_API_KEY_25
-    # through *_API_KEY_36 missing while 1..24 and 37..46 are live, because
-    # NUM_{PROVIDER} was set once and never reconciled after keys were added
-    # or dropped). Scanning `range(1, expected_count + 1)` either crashes on
-    # the first missing index or silently caps the fleet at expected_count,
-    # even when more keys exist above that number. Instead, scan every
-    # {PROVIDER}_API_KEY_<index> variable that actually exists, in whatever
-    # order the indices fall, and use all of them -- NUM_{PROVIDER} becomes
-    # an expectation to warn against, not a hard loop bound.
+    # NUM_{PROVIDER} is AUTHORITATIVE (0.3.2, reverting 0.3.1's scan-all):
+    # the fleet convention is that the first NUM indices (sorted ascending)
+    # are the sanctioned live keys, and keys parked at higher indices beyond
+    # a numbering gap are dead or spare on purpose -- loading them would put
+    # known-bad keys back into rotation. Gaps INSIDE the sanctioned range
+    # are tolerated (a retired key's index can be missing); the loader takes
+    # the first NUM indices that actually exist and warns if it comes up
+    # short, but never loads past NUM keys.
     key_pattern = re.compile(rf"^{re.escape(provider_upper)}_API_KEY_(\d+)$")
     found: Dict[int, str] = {}
     for env_name, value in os.environ.items():
@@ -343,11 +341,20 @@ def load_api_keys(
     if not found:
         raise ValueError(f"Missing API key: {provider_upper}_API_KEY_1")
 
-    indices = sorted(found)
-    if len(indices) != expected_count:
+    all_indices = sorted(found)
+    indices = all_indices[:expected_count]
+    excluded = all_indices[expected_count:]
+    if excluded:
+        logging.getLogger(__name__).info(
+            "%s: %s=%d -- using the first %d key indices %s; excluding %d "
+            "parked key(s) at indices %s (dead/spare by convention).",
+            provider_upper, num_keys_var, expected_count, len(indices), indices,
+            len(excluded), excluded,
+        )
+    if len(indices) < expected_count:
         logging.getLogger(__name__).warning(
-            "%s: found %d API key(s) (indices %s) but %s=%d -- numbering has "
-            "a gap or is stale. Using all %d key(s) actually found.",
+            "%s: only %d API key(s) found (indices %s) but %s=%d -- the "
+            "declared count is stale. Using the %d key(s) actually found.",
             provider_upper, len(indices), indices, num_keys_var, expected_count,
             len(indices),
         )

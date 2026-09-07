@@ -331,25 +331,37 @@ class TestLoadApiKeysStatic(unittest.TestCase):
         self.assertIn("Missing API key", str(ctx.exception))
 
     @patch.dict(os.environ, {
-        # A real-world fleet whose NUM_ counter went stale after keys were
-        # added/retired: 24 keys, then a gap, then 10 more (mirrors William's
-        # GROQ fleet: 1..24 live, 25..36 retired, 37..46 re-issued).
+        # The fleet convention (0.3.2): the first NUM indices are the
+        # sanctioned live keys; keys parked at higher indices beyond a gap
+        # are dead or spare ON PURPOSE (mirrors William's GROQ fleet:
+        # 1..24 live, 37..46 parked dead). NUM is authoritative.
         "NUM_GAPPY": "24",
         **{f"GAPPY_API_KEY_{i}": f"key-{i}" for i in range(1, 25)},
         **{f"GAPPY_API_KEY_{i}": f"key-{i}" for i in range(37, 47)},
     })
     @patch('keycycle.multi_client_wrapper.load_dotenv')
-    def test_load_keys_tolerates_numbering_gap(self, mock_dotenv):
-        """A gap in the index sequence should not crash or truncate the fleet."""
+    def test_load_keys_num_caps_out_parked_keys(self, mock_dotenv):
+        """Only the first NUM sorted indices load; parked keys stay out."""
         keys = MultiClientWrapper.load_api_keys("gappy")
 
-        # All 34 keys are found (both sides of the gap), even though
-        # NUM_GAPPY only claims 24 -- the env var is a hint, not a cap.
-        self.assertEqual(len(keys), 34)
+        self.assertEqual(len(keys), 24)
         self.assertEqual(keys[0], "key-1")
-        self.assertEqual(keys[23], "key-24")
-        self.assertEqual(keys[24], "key-37")
-        self.assertEqual(keys[-1], "key-46")
+        self.assertEqual(keys[-1], "key-24")
+
+    @patch.dict(os.environ, {
+        # A gap INSIDE the sanctioned range is tolerated: index 2 retired,
+        # NUM still says 3, so the loader takes the first 3 that exist
+        # (1, 3, 4) rather than crashing or stopping at the gap.
+        "NUM_HOLEY": "3",
+        "HOLEY_API_KEY_1": "key-1",
+        "HOLEY_API_KEY_3": "key-3",
+        "HOLEY_API_KEY_4": "key-4",
+        "HOLEY_API_KEY_9": "key-9",
+    })
+    @patch('keycycle.multi_client_wrapper.load_dotenv')
+    def test_load_keys_tolerates_gap_inside_sanctioned_range(self, mock_dotenv):
+        keys = MultiClientWrapper.load_api_keys("holey")
+        self.assertEqual(keys, ["key-1", "key-3", "key-4"])
 
     @patch.dict(os.environ, {
         "NUM_SPARSE": "5",
