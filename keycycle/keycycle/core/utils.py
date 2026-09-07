@@ -313,26 +313,52 @@ def load_api_keys(
         env_path = Path.cwd() / ".env"
     load_dotenv(dotenv_path=env_path, override=True)
 
-    num_keys_var = f"NUM_{provider.upper()}"
-    num_keys = os.getenv(num_keys_var)
-    if not num_keys:
+    provider_upper = provider.upper()
+    num_keys_var = f"NUM_{provider_upper}"
+    num_keys_raw = os.getenv(num_keys_var)
+    if not num_keys_raw:
         raise ValueError(f"Environment variable '{num_keys_var}' not found.")
     try:
-        num_keys = int(num_keys)
+        expected_count = int(num_keys_raw)
     except ValueError:
-        raise ValueError(f"'{num_keys_var}' must be an integer, got: {num_keys}")
+        raise ValueError(f"'{num_keys_var}' must be an integer, got: {num_keys_raw}")
+
+    # A key fleet isn't always numbered contiguously from 1..N -- a retired
+    # or never-issued key can leave a gap (e.g. a provider's *_API_KEY_25
+    # through *_API_KEY_36 missing while 1..24 and 37..46 are live, because
+    # NUM_{PROVIDER} was set once and never reconciled after keys were added
+    # or dropped). Scanning `range(1, expected_count + 1)` either crashes on
+    # the first missing index or silently caps the fleet at expected_count,
+    # even when more keys exist above that number. Instead, scan every
+    # {PROVIDER}_API_KEY_<index> variable that actually exists, in whatever
+    # order the indices fall, and use all of them -- NUM_{PROVIDER} becomes
+    # an expectation to warn against, not a hard loop bound.
+    key_pattern = re.compile(rf"^{re.escape(provider_upper)}_API_KEY_(\d+)$")
+    found: Dict[int, str] = {}
+    for env_name, value in os.environ.items():
+        match = key_pattern.match(env_name)
+        if match and value:
+            found[int(match.group(1))] = value
+
+    if not found:
+        raise ValueError(f"Missing API key: {provider_upper}_API_KEY_1")
+
+    indices = sorted(found)
+    if len(indices) != expected_count:
+        logging.getLogger(__name__).warning(
+            "%s: found %d API key(s) (indices %s) but %s=%d -- numbering has "
+            "a gap or is stale. Using all %d key(s) actually found.",
+            provider_upper, len(indices), indices, num_keys_var, expected_count,
+            len(indices),
+        )
 
     keys: List[KeyEntry] = []
-    for i in range(1, num_keys + 1):
-        key_var = f"{provider.upper()}_API_KEY_{i}"
-        key = os.getenv(key_var)
-        if not key:
-            raise ValueError(f"Missing API key: {key_var}")
-
+    for i in indices:
+        key = found[i]
         if extra_params:
             key_dict: Dict[str, Any] = {api_key_param: key}
             for param in extra_params:
-                val = os.getenv(f"{provider.upper()}_{param.upper()}_{i}")
+                val = os.getenv(f"{provider_upper}_{param.upper()}_{i}")
                 if val:
                     key_dict[param] = val
             keys.append(key_dict)

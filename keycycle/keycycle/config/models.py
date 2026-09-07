@@ -16,6 +16,7 @@ class ModelDict(TypedDict):
     openrouter: Any
     cohere: Any
     moonshot: Any
+    mistral: Any
 
 PROVIDER_STRATEGIES: ModelDict = {
     'cerebras': RateLimitStrategy.PER_MODEL,
@@ -23,7 +24,8 @@ PROVIDER_STRATEGIES: ModelDict = {
     'gemini': RateLimitStrategy.PER_MODEL,
     'openrouter': RateLimitStrategy.GLOBAL,
     'cohere': RateLimitStrategy.PER_MODEL,
-    'moonshot': RateLimitStrategy.PER_MODEL
+    'moonshot': RateLimitStrategy.PER_MODEL,
+    'mistral': RateLimitStrategy.PER_MODEL
 }
 
 # Load Cohere tiers first to handle the env var logic
@@ -44,7 +46,8 @@ MODEL_LIMITS: ModelDict = {
         # Same for every model
         'default': COHERE_TIERS.get(os.getenv('COHERE_TIER', 'free').lower(), COHERE_TIERS['free'])
     },
-    'moonshot': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'moonshot.yaml'))
+    'moonshot': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'moonshot.yaml')),
+    'mistral': load_rate_limits_from_yaml(os.path.join(MODELS_DIR, 'mistral.yaml'))
 }
 
 OPENROUTER_MODELS = load_openrouter_models(os.path.join(MODELS_DIR, 'openrouter_models.yaml'))

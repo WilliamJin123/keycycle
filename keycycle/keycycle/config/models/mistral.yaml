@@ -1,0 +1,13 @@
+# Mistral API rate limits (dummy high limits, same posture as moonshot.yaml)
+# Base URL: https://api.mistral.ai/v1 (OpenAI-compatible chat completions)
+# Not independently researched against Mistral's published tier limits yet --
+# a single key (NUM_MISTRAL=1, no rotation benefit) makes local throttling
+# low-value for now; Mistral's own 429s still surface and rotate normally.
+
+default:
+  requests_per_minute: 10000
+  requests_per_hour: 100000
+  requests_per_day: 1000000
+  tokens_per_minute: 10000000
+  tokens_per_hour: 100000000
+  tokens_per_day: 1000000000

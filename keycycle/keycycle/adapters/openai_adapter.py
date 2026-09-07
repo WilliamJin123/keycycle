@@ -43,6 +43,7 @@ PROVIDER_BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "cohere": "https://api.cohere.ai/compatibility/v1",
     "moonshot": "https://api.moonshot.ai/v1",
+    "mistral": "https://api.mistral.ai/v1",
 }
 
 class BaseRotatingClient:

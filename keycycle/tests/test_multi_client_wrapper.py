@@ -330,6 +330,41 @@ class TestLoadApiKeysStatic(unittest.TestCase):
 
         self.assertIn("Missing API key", str(ctx.exception))
 
+    @patch.dict(os.environ, {
+        # A real-world fleet whose NUM_ counter went stale after keys were
+        # added/retired: 24 keys, then a gap, then 10 more (mirrors William's
+        # GROQ fleet: 1..24 live, 25..36 retired, 37..46 re-issued).
+        "NUM_GAPPY": "24",
+        **{f"GAPPY_API_KEY_{i}": f"key-{i}" for i in range(1, 25)},
+        **{f"GAPPY_API_KEY_{i}": f"key-{i}" for i in range(37, 47)},
+    })
+    @patch('keycycle.multi_client_wrapper.load_dotenv')
+    def test_load_keys_tolerates_numbering_gap(self, mock_dotenv):
+        """A gap in the index sequence should not crash or truncate the fleet."""
+        keys = MultiClientWrapper.load_api_keys("gappy")
+
+        # All 34 keys are found (both sides of the gap), even though
+        # NUM_GAPPY only claims 24 -- the env var is a hint, not a cap.
+        self.assertEqual(len(keys), 34)
+        self.assertEqual(keys[0], "key-1")
+        self.assertEqual(keys[23], "key-24")
+        self.assertEqual(keys[24], "key-37")
+        self.assertEqual(keys[-1], "key-46")
+
+    @patch.dict(os.environ, {
+        "NUM_SPARSE": "5",
+        "SPARSE_API_KEY_1": "key-1",
+        "SPARSE_API_KEY_3": "key-3",
+    })
+    @patch('keycycle.multi_client_wrapper.load_dotenv')
+    def test_load_keys_logs_warning_on_count_mismatch(self, mock_dotenv):
+        """A mismatch between NUM_{PROVIDER} and keys found is logged loudly."""
+        with self.assertLogs('keycycle.core.utils', level='WARNING') as ctx:
+            keys = MultiClientWrapper.load_api_keys("sparse")
+
+        self.assertEqual(keys, ["key-1", "key-3"])
+        self.assertTrue(any("NUM_SPARSE" in msg for msg in ctx.output))
+
 
 class TestKwargFiltering(unittest.TestCase):
     """Test the kwarg filtering functionality (introspection + manual exclusion)."""
