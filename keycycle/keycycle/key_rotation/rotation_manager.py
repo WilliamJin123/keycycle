@@ -1,4 +1,5 @@
 import time
+import asyncio
 import atexit
 import threading
 from threading import Lock, Event
@@ -17,6 +18,8 @@ from ..config.constants import (
     CLEANUP_INTERVAL_SECONDS,
     HISTORY_LOOKBACK_SECONDS,
     DEFAULT_COOLDOWN_SECONDS,
+    KEY_WAIT_MAX_SECONDS,
+    KEY_WAIT_POLL_SECONDS,
 )
 from ..core.utils import get_key_suffix, KeyEntry, normalize_key_entries
 from ..usage.usage_logger import AsyncUsageLogger
@@ -35,8 +38,10 @@ class RotatingKeyManager:
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         limit_resolver: Optional[Callable[[str, Optional[str]], RateLimits]] = None,
         api_key_param: str = "api_key",
+        max_key_wait_seconds: float = KEY_WAIT_MAX_SECONDS,
     ):
         self.provider_name = provider_name
+        self.max_key_wait_seconds = max_key_wait_seconds
         self.logger = logger or default_logger
         self.strategy = strategy
         self.cooldown_seconds = cooldown_seconds
@@ -147,6 +152,64 @@ class RotatingKeyManager:
                     return key
             return None
     
+    def all_keys_dead(self) -> bool:
+        """True when every key has been marked dead (401/402/403) - nothing to wait for."""
+        return bool(self.keys) and all(k.dead for k in self.keys)
+
+    def unavailable_message(self, model_id: str) -> str:
+        dead = sum(1 for k in self.keys if k.dead)
+        if self.all_keys_dead():
+            return f"No usable keys for {model_id}: all {len(self.keys)} keys are dead (401/402/403)"
+        return (
+            f"No available keys for {model_id}: {dead}/{len(self.keys)} dead, the rest stayed "
+            f"rate-limited or cooling down for {self.max_key_wait_seconds:.0f}s"
+        )
+
+    def acquire_key(
+        self,
+        model_id: str,
+        default_limits: RateLimits,
+        estimated_tokens: int = 1000,
+        max_wait_seconds: Optional[float] = None,
+        poll_seconds: float = KEY_WAIT_POLL_SECONDS,
+    ) -> Optional[KeyUsage]:
+        """
+        get_key, but WAIT while every live key is inside a rate window or a
+        cooldown instead of handing back None at once.
+
+        Returns None only when every key is dead or max_wait elapses - so a
+        caller with one production key at its per-minute cap rides the window
+        out rather than aborting a long run.
+        """
+        max_wait = self.max_key_wait_seconds if max_wait_seconds is None else max_wait_seconds
+        deadline = time.monotonic() + max_wait
+        while True:
+            key = self.get_key(model_id, default_limits, estimated_tokens)
+            if key is not None:
+                return key
+            if self.all_keys_dead() or time.monotonic() >= deadline:
+                return None
+            time.sleep(poll_seconds)
+
+    async def acquire_key_async(
+        self,
+        model_id: str,
+        default_limits: RateLimits,
+        estimated_tokens: int = 1000,
+        max_wait_seconds: Optional[float] = None,
+        poll_seconds: float = KEY_WAIT_POLL_SECONDS,
+    ) -> Optional[KeyUsage]:
+        """acquire_key for async callers (non-blocking sleep)."""
+        max_wait = self.max_key_wait_seconds if max_wait_seconds is None else max_wait_seconds
+        deadline = time.monotonic() + max_wait
+        while True:
+            key = self.get_key(model_id, default_limits, estimated_tokens)
+            if key is not None:
+                return key
+            if self.all_keys_dead() or time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(poll_seconds)
+
     def get_specific_key(self, identifier: Union[int, str], model_id: str, estimated_tokens: int = 1000) -> Optional[KeyUsage]:
         """
         Get a specific key by index or identifier.

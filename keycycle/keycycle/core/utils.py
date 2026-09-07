@@ -241,6 +241,29 @@ def is_auth_error(e: Exception) -> bool:
     return False
 
 
+# A key that answers 401/402/403 is unusable for good (revoked, unpaid,
+# or its project denied) — no cooldown will fix it, so rotate off it.
+DEAD_KEY_STATUS_CODES = AUTH_STATUS_CODES | PAYMENT_REQUIRED_STATUS_CODES
+
+
+def is_dead_key_error(e: Exception) -> bool:
+    """
+    Detect errors that mean THIS KEY is dead, not merely busy: HTTP 401/403
+    (invalid, revoked, or project-denied key — e.g. Gemini's
+    "Your project has been denied access") and 402 (credits exhausted).
+
+    A status_code, when present, is authoritative: 429s are never dead keys
+    whatever their message says. Without one, fall back to the string
+    heuristics of is_payment_required_error / is_auth_error.
+    """
+    status = getattr(e, "status_code", None)
+    if status in DEAD_KEY_STATUS_CODES:
+        return True
+    if status == 429:
+        return False
+    return is_payment_required_error(e) or is_auth_error(e)
+
+
 def validate_api_key(api_key: str) -> bool:
     """
     Basic validation of API key format.

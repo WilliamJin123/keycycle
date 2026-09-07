@@ -31,5 +31,12 @@ TEMP_RATE_LIMIT_MULTIPLIER = 2.0
 # Key rotation delay (seconds to wait after rotating to a new key)
 KEY_ROTATION_DELAY_SECONDS = 0.5
 
+# How long acquire_key() polls for a live key to leave its rate window /
+# cooldown before giving up. A single production key at its per-minute cap
+# is the common case (Cohere, 2026-09-07): the right answer is to wait for
+# the window, not to abort the caller's whole run.
+KEY_WAIT_MAX_SECONDS = 120.0
+KEY_WAIT_POLL_SECONDS = 1.0
+
 # Usage logging batch size
 USAGE_LOG_BATCH_SIZE = 50

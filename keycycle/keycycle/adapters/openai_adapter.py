@@ -14,7 +14,7 @@ from ..config.constants import (
 from ..core.utils import (
     is_rate_limit_error,
     is_temporary_rate_limit_error,
-    is_payment_required_error,
+    is_dead_key_error,
     get_key_suffix,
 )
 from ..core.backoff import ExponentialBackoff, BackoffConfig
@@ -132,9 +132,9 @@ class RotatingOpenAIClient(BaseRotatingClient):
             kwargs['stream_options'] = {"include_usage": True}
 
         for attempt in range(self.max_retries + 1):
-            key_usage = self.manager.get_key(model_id, limits, self.estimated_tokens)
+            key_usage = self.manager.acquire_key(model_id, limits, self.estimated_tokens)
             if not key_usage:
-                raise RuntimeError(f"No available keys for {model_id}")
+                raise RuntimeError(self.manager.unavailable_message(model_id))
 
             # Create backoff for temporary rate limits
             temp_backoff = ExponentialBackoff(BackoffConfig(
@@ -171,11 +171,11 @@ class RotatingOpenAIClient(BaseRotatingClient):
                         time.sleep(delay)
                         continue  # Retry with SAME key
 
-                    # Payment required (quota/credits exhausted) - key is dead
+                    # Dead key (401/403 revoked/denied, 402 credits exhausted) - key is dead
                     # for this process, rotate to next key
-                    if is_payment_required_error(e) and attempt < self.max_retries:
+                    if is_dead_key_error(e) and attempt < self.max_retries:
                         logger.warning(
-                            "402/PaymentRequired hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
+                            "Dead key (401/402/403) hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
                             model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
                         )
                         key_usage.mark_dead()
@@ -217,9 +217,9 @@ class RotatingOpenAIClient(BaseRotatingClient):
                     final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if is_payment_required_error(e):
+            if is_dead_key_error(e):
                 logger.warning(
-                    "402/PaymentRequired hit during streaming for %s on key ...%s. Marking key dead.",
+                    "Dead key (401/402/403) hit during streaming for %s on key ...%s. Marking key dead.",
                     model_id, get_key_suffix(key_usage.api_key)
                 )
                 key_usage.mark_dead()
@@ -266,9 +266,9 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
             kwargs['stream_options'] = {"include_usage": True}
 
         for attempt in range(self.max_retries + 1):
-            key_usage = self.manager.get_key(model_id, limits, self.estimated_tokens)
+            key_usage = await self.manager.acquire_key_async(model_id, limits, self.estimated_tokens)
             if not key_usage:
-                raise RuntimeError(f"No available keys for {model_id}")
+                raise RuntimeError(self.manager.unavailable_message(model_id))
 
             # Create backoff for temporary rate limits
             temp_backoff = ExponentialBackoff(BackoffConfig(
@@ -305,11 +305,11 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                         await asyncio.sleep(delay)
                         continue  # Retry with SAME key
 
-                    # Payment required (quota/credits exhausted) - key is dead
+                    # Dead key (401/403 revoked/denied, 402 credits exhausted) - key is dead
                     # for this process, rotate to next key
-                    if is_payment_required_error(e) and attempt < self.max_retries:
+                    if is_dead_key_error(e) and attempt < self.max_retries:
                         logger.warning(
-                            "402/PaymentRequired hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
+                            "Dead key (401/402/403) hit for %s on key ...%s. Marking key dead and rotating. (Attempt %d/%d)",
                             model_id, get_key_suffix(key_usage.api_key), attempt + 1, self.max_retries + 1
                         )
                         key_usage.mark_dead()
@@ -351,9 +351,9 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                     final_tokens = chunk.usage.total_tokens
                 yield chunk
         except Exception as e:
-            if is_payment_required_error(e):
+            if is_dead_key_error(e):
                 logger.warning(
-                    "402/PaymentRequired hit during streaming for %s on key ...%s. Marking key dead.",
+                    "Dead key (401/402/403) hit during streaming for %s on key ...%s. Marking key dead.",
                     model_id, get_key_suffix(key_usage.api_key)
                 )
                 key_usage.mark_dead()

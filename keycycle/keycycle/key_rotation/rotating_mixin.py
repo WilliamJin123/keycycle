@@ -15,7 +15,7 @@ from ..config.constants import (
 from ..core.utils import (
     is_rate_limit_error,
     is_temporary_rate_limit_error,
-    is_payment_required_error,
+    is_dead_key_error,
     get_key_suffix,
 )
 from ..core.backoff import ExponentialBackoff, BackoffConfig
@@ -171,11 +171,11 @@ class RotatingCredentialsMixin:
                         time.sleep(delay)
                         continue  # Retry with SAME key
 
-                    # Payment required (quota/credits exhausted) - key is dead
+                    # Dead key (401/403 revoked/denied, 402 credits exhausted) - key is dead
                     # for this process, rotate to next key
-                    if is_payment_required_error(e) and attempt < limit:
+                    if is_dead_key_error(e) and attempt < limit:
                         self.logger.warning(
-                            "402 Hit on key %s (Sync) [%s]. Marking key dead and rotating (%d/%d).",
+                            "Dead key (401/402/403) on key %s (Sync) [%s]. Marking key dead and rotating (%d/%d).",
                             get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
                         )
                         key_usage.mark_dead()
@@ -228,11 +228,11 @@ class RotatingCredentialsMixin:
                         await asyncio.sleep(delay)
                         continue  # Retry with SAME key
 
-                    # Payment required (quota/credits exhausted) - key is dead
+                    # Dead key (401/403 revoked/denied, 402 credits exhausted) - key is dead
                     # for this process, rotate to next key
-                    if is_payment_required_error(e) and attempt < limit:
+                    if is_dead_key_error(e) and attempt < limit:
                         self.logger.warning(
-                            "402 Hit on key %s (Async) [%s]. Marking key dead and rotating (%d/%d).",
+                            "Dead key (401/402/403) on key %s (Async) [%s]. Marking key dead and rotating (%d/%d).",
                             get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
                         )
                         key_usage.mark_dead()
@@ -300,9 +300,9 @@ class RotatingCredentialsMixin:
                         time.sleep(delay)
                         continue
 
-                    if is_payment_required_error(e) and attempt < limit:
+                    if is_dead_key_error(e) and attempt < limit:
                         self.logger.warning(
-                            "402 Hit on key %s (Sync Stream) [%s]. Marking key dead and rotating (%d/%d).",
+                            "Dead key (401/402/403) on key %s (Sync Stream) [%s]. Marking key dead and rotating (%d/%d).",
                             get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
                         )
                         key_usage.mark_dead()
@@ -366,9 +366,9 @@ class RotatingCredentialsMixin:
                         await asyncio.sleep(delay)
                         continue
 
-                    if is_payment_required_error(e) and attempt < limit:
+                    if is_dead_key_error(e) and attempt < limit:
                         self.logger.warning(
-                            "402 Hit on key %s (Async Stream) [%s]. Marking key dead and rotating (%d/%d).",
+                            "Dead key (401/402/403) on key %s (Async Stream) [%s]. Marking key dead and rotating (%d/%d).",
                             get_key_suffix(self.api_key), self.model_id, attempt + 1, limit
                         )
                         key_usage.mark_dead()
