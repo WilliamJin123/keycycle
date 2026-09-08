@@ -116,14 +116,19 @@ class RotatingKeyManager:
                             key.global_bucket.clean()
             except Exception as e:
                 self.logger.error("Cleanup loop error: %s", e, exc_info=True)
-            time.sleep(CLEANUP_INTERVAL_SECONDS)
-    
+            # Wait on the stop event, not the clock: stop() wakes this loop at
+            # once instead of leaving join() to time out while the thread
+            # sleeps through the whole interval.
+            self._stop_event.wait(CLEANUP_INTERVAL_SECONDS)
+
     def _start_cleanup(self) -> None:
         self._thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop the cleanup thread and flush logs."""
+        """Stop the cleanup thread and flush logs. Returns promptly: the
+        cleanup loop waits on the stop event, so the join does not wait out
+        CLEANUP_INTERVAL_SECONDS."""
         self._stop_event.set()
         if self.usage_logger is not None:
             self.usage_logger.stop()  # Flush logs

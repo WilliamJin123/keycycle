@@ -43,19 +43,8 @@ def db_url(tmp_path):
     return f"sqlite:///{tmp_path / 'usage.db'}"
 
 
-@pytest.fixture(autouse=True)
-def fast_cleanup_loop():
-    """
-    The manager's cleanup thread sleeps CLEANUP_INTERVAL_SECONDS (55s) between
-    passes, so stop() would otherwise burn its whole 10s join timeout for every
-    manager a test builds. Shrink the interval so stop() returns at once.
-    """
-    with patch("keycycle.key_rotation.rotation_manager.CLEANUP_INTERVAL_SECONDS", 0.02):
-        yield
-
-
 @pytest.fixture
-def make_manager(fast_cleanup_loop):
+def make_manager():
     """Builds managers and stops them (flushing the writer thread) on teardown."""
     created = []
 
@@ -75,7 +64,7 @@ def make_manager(fast_cleanup_loop):
 
 
 @pytest.fixture
-def stop_wrappers(fast_cleanup_loop):
+def stop_wrappers():
     """Registers wrappers so their manager threads are stopped on teardown."""
     created = []
     yield created.append

@@ -211,3 +211,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# publish.sh copies the root README next to pyproject.toml so the wheel/sdist
+# carry the long description; the copy is build output, the root file is the source.
+keycycle/README.md
