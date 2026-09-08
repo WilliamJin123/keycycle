@@ -24,6 +24,7 @@ from .core.utils import (
     load_api_keys as _load_api_keys,
     normalize_key_limits as _normalize_key_limits,
 )
+from .core.exceptions import ConfigurationError
 from .usage.db_logic import UsageDatabase
 from .adapters.generic_adapter import (
     create_rotating_client,
@@ -91,18 +92,46 @@ class MultiClientWrapper:
     MODEL_LIMITS = MODEL_LIMITS
     PROVIDER_STRATEGIES = PROVIDER_STRATEGIES
 
-    def __init__(self, db_url: Optional[str] = None, db_env_var: str = "TIDB_DB_URL"):
+    def __init__(
+        self,
+        db_url: Optional[str] = None,
+        db_env_var: str = "TIDB_DB_URL",
+        track_usage: bool = True,
+    ):
         """
         Initialize a MultiClientWrapper.
 
         Args:
             db_url: Database URL for usage persistence (optional)
             db_env_var: Environment variable name for database URL
+            track_usage: Persist per-call usage to the database. When False no
+                UsageDatabase is built at all, so no db_url / db_env_var is needed.
         """
-        self.db = UsageDatabase(db_url, db_env_var)
+        # With tracking off there is nothing to persist, so no database is built
+        # and no db_url / TIDB_DB_URL is required.
+        self._track_usage = bool(track_usage)
+        self.db = UsageDatabase(db_url, db_env_var) if self._track_usage else None
         self._managers: Dict[str, RotatingKeyManager] = {}
         self._configs: Dict[str, ProviderConfig] = {}
         self._key_limits: Dict[str, Dict[str, KeyLimitOverride]] = {}
+
+    @property
+    def track_usage(self) -> bool:
+        """Whether per-call usage is written to the usage database."""
+        return self._track_usage
+
+    @track_usage.setter
+    def track_usage(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and self.db is None:
+            raise ConfigurationError(
+                "usage tracking was requested but no usage database is configured: "
+                "this wrapper was built with track_usage=False. Rebuild it with "
+                "track_usage=True (and a db_url) to persist usage."
+            )
+        self._track_usage = enabled
+        for manager in self._managers.values():
+            manager.track_usage = enabled
 
     def register_provider(
         self,
@@ -141,6 +170,9 @@ class MultiClientWrapper:
         normalized_key_limits = self._normalize_key_limits_from_entries(keys, key_limits, api_key_param)
         self._key_limits[provider] = normalized_key_limits
 
+        # Per-provider override is allowed; otherwise inherit the wrapper's setting.
+        manager_track_usage = kwargs.pop("track_usage", self._track_usage)
+
         manager = RotatingKeyManager(
             api_keys=keys,
             provider_name=provider,
@@ -148,6 +180,7 @@ class MultiClientWrapper:
             db=self.db,
             api_key_param=api_key_param,
             limit_resolver=lambda m, k, p=provider: self._resolve_limits(p, m, k),
+            track_usage=manager_track_usage,
             **kwargs
         )
         self._managers[provider] = manager
@@ -287,6 +320,7 @@ class MultiClientWrapper:
         env_file: Optional[str] = None,
         db_url: Optional[str] = None,
         db_env_var: str = "TIDB_DB_URL",
+        track_usage: bool = True,
     ) -> "MultiClientWrapper":
         """
         Create a wrapper from environment variables.
@@ -296,6 +330,8 @@ class MultiClientWrapper:
             env_file: Path to .env file (optional)
             db_url: Database URL for usage persistence
             db_env_var: Environment variable name for database URL
+            track_usage: Persist per-call usage to the database. When False no
+                UsageDatabase is built at all, so no db_url / db_env_var is needed.
 
         Returns:
             Configured MultiClientWrapper instance
@@ -318,7 +354,7 @@ class MultiClientWrapper:
             TWELVELABS_API_KEY_2=key2
             TWELVELABS_INDEX_ID_2=idx_xyz
         """
-        instance = cls(db_url=db_url, db_env_var=db_env_var)
+        instance = cls(db_url=db_url, db_env_var=db_env_var, track_usage=track_usage)
 
         for provider, config in providers.items():
             keys = cls.load_api_keys(

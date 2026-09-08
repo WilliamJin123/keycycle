@@ -92,6 +92,51 @@ wrapper.print_key_stats(0) # Stats for key index 0
 wrapper.print_model_stats("gpt-4o")
 ```
 
+### Turning usage tracking off
+
+Usage tracking is the database half of the library: it persists every call to
+`usage_logs` and rehydrates each key's counters on start. The in-memory
+accounting that actually drives rotation and rate limiting is always on.
+
+Turn tracking off and no database is required at all - no `db_url`, no
+`TIDB_DB_URL`.
+
+```python
+from keycycle import MultiProviderWrapper
+
+# No DB is constructed, no connection string needed.
+wrapper = MultiProviderWrapper.from_env(
+    provider="openai",
+    default_model_id="gpt-4o",
+    track_usage=False,
+)
+```
+
+Flip it at runtime on the wrapper (it propagates to the managers it owns) or on
+a manager directly:
+
+```python
+wrapper.track_usage = False   # stop writing from here on
+wrapper.track_usage = True    # resume (raises ConfigurationError if built without a DB)
+
+wrapper.manager.track_usage = False  # same switch, one manager
+```
+
+Or skip tracking for a single call - the keyword is stripped before the request
+reaches the underlying client:
+
+```python
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello"}],
+    track_usage=False,
+)
+```
+
+`track_usage=True` on a call works too, and forces the write even when the
+wrapper's own setting is off. Asking for it with no database configured raises
+`ConfigurationError`.
+
 ## Features
 
 *   **Rotation:** Round-robin selection. Skips keys on cooldown.

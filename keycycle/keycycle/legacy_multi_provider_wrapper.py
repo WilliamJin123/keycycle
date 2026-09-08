@@ -27,7 +27,7 @@ from .core.utils import (
     normalize_key_limits as _normalize_key_limits,
     resolve_limits as _resolve_limits,
 )
-from .core.exceptions import NoAvailableKeyError, KeyNotFoundError
+from .core.exceptions import NoAvailableKeyError, KeyNotFoundError, ConfigurationError
 from .core.backoff import ExponentialBackoff, BackoffConfig
 from .usage.db_logic import UsageDatabase
 from .config.log_config import default_logger
@@ -88,6 +88,7 @@ class MultiProviderWrapper:
         key_tiers: Optional[Dict[int, str]] = None,
         tier_limits: Optional[Dict[str, RateLimits]] = None,
         extra_params: Optional[List[str]] = None,
+        track_usage: bool = True,
         **kwargs
     ):
         """
@@ -106,6 +107,8 @@ class MultiProviderWrapper:
             tier_limits: Map tier names to rate limits (e.g., {'pro': RateLimits(...)})
             extra_params: List of extra parameter names to load alongside API keys.
                 For each param, loads {PROVIDER}_{PARAM}_N environment variables.
+            track_usage: Persist per-call usage to the database. When False no
+                UsageDatabase is built at all, so no db_url / db_env_var is needed.
             **kwargs: Additional arguments passed to the wrapper
 
         Example with tiers:
@@ -134,7 +137,8 @@ class MultiProviderWrapper:
             model_class = None
 
         api_keys = cls.load_api_keys(provider, env_file, extra_params)
-        db_url = db_url or os.getenv(db_env_var)
+        if track_usage:
+            db_url = db_url or os.getenv(db_env_var)
 
         # Convert tier config to key_limits
         if key_tiers and tier_limits:
@@ -146,7 +150,7 @@ class MultiProviderWrapper:
         return cls(
             provider, api_keys, default_model_id,
             model_class, db_url, db_env_var, debug, logger,
-            key_limits=key_limits, **kwargs
+            key_limits=key_limits, track_usage=track_usage, **kwargs
         )
     
     def __init__(
@@ -161,6 +165,7 @@ class MultiProviderWrapper:
         logger: Optional[logging.Logger] = None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         key_limits: Optional[Dict[Union[int, str], KeyLimitOverride]] = None,
+        track_usage: bool = True,
         **kwargs
     ):
         self.provider = provider.lower()
@@ -185,16 +190,37 @@ class MultiProviderWrapper:
         # Normalize key_limits: convert key identifiers (index/suffix/full key) to suffixes
         self._key_limits: Dict[str, KeyLimitOverride] = self._normalize_key_limits_internal(primary_keys, key_limits)
 
-        self.db = UsageDatabase(db_url, db_env_var)
+        # With tracking off there is nothing to persist, so no database is built
+        # and no db_url / TIDB_DB_URL is required.
+        self._track_usage = bool(track_usage)
+        self.db = UsageDatabase(db_url, db_env_var) if self._track_usage else None
         self.strategy = self.PROVIDER_STRATEGIES.get(self.provider, RateLimitStrategy.PER_MODEL)
         self.manager = RotatingKeyManager(
             api_keys, self.provider, self.strategy, self.db,
             cooldown_seconds=cooldown_seconds,
             limit_resolver=self._resolve_limits_internal,
+            track_usage=self._track_usage,
         )
         self._model_cache_lock = RLock()  # Thread safety for RotatingClass creation
         self._RotatingClass = None
         self.console = Console()
+
+    @property
+    def track_usage(self) -> bool:
+        """Whether per-call usage is written to the usage database."""
+        return self._track_usage
+
+    @track_usage.setter
+    def track_usage(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and self.db is None:
+            raise ConfigurationError(
+                "usage tracking was requested but no usage database is configured: "
+                f"this wrapper for '{self.provider}' was built with track_usage=False. "
+                "Rebuild it with track_usage=True (and a db_url) to persist usage."
+            )
+        self._track_usage = enabled
+        self.manager.track_usage = enabled
 
     def toggle_debug(self, enable: bool) -> None:
         """

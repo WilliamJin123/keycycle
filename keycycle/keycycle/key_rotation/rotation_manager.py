@@ -22,6 +22,7 @@ from ..config.constants import (
     KEY_WAIT_POLL_SECONDS,
 )
 from ..core.utils import get_key_suffix, KeyEntry, normalize_key_entries
+from ..core.exceptions import ConfigurationError
 from ..usage.usage_logger import AsyncUsageLogger
 from ..usage.db_logic import UsageDatabase
 
@@ -33,12 +34,13 @@ class RotatingKeyManager:
         api_keys: List[KeyEntry],
         provider_name: str,
         strategy: RateLimitStrategy,
-        db: UsageDatabase,
+        db: Optional[UsageDatabase] = None,
         logger: Optional[logging.Logger] = None,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         limit_resolver: Optional[Callable[[str, Optional[str]], RateLimits]] = None,
         api_key_param: str = "api_key",
         max_key_wait_seconds: float = KEY_WAIT_MAX_SECONDS,
+        track_usage: bool = True,
     ):
         self.provider_name = provider_name
         self.max_key_wait_seconds = max_key_wait_seconds
@@ -58,8 +60,14 @@ class RotatingKeyManager:
         self.lock = Lock()
 
         self.db = db
-        self.usage_logger = AsyncUsageLogger(self.db)
-        self._hydrate()
+        # Without a database there is nothing to persist to, so tracking is
+        # forced off and the manager runs purely in memory.
+        self.track_usage = bool(track_usage) and db is not None
+        # The logger exists whenever a db does, so `manager.track_usage = True`
+        # at runtime resumes writes without rebuilding the writer thread.
+        self.usage_logger = AsyncUsageLogger(db) if db is not None else None
+        if self.track_usage:
+            self._hydrate()
 
         self._stop_event = Event()
         self._start_cleanup()
@@ -77,6 +85,8 @@ class RotatingKeyManager:
 
     def _hydrate(self) -> None:
         """Load historical usage from database to restore state."""
+        if self.db is None:
+            return
         self.logger.debug("Loading history for provider %s.", self.provider_name)
         all_history = self.db.load_provider_history(self.provider_name, HISTORY_LOOKBACK_SECONDS)
         if not all_history:
@@ -115,7 +125,8 @@ class RotatingKeyManager:
     def stop(self) -> None:
         """Stop the cleanup thread and flush logs."""
         self._stop_event.set()
-        self.usage_logger.stop()  # Flush logs
+        if self.usage_logger is not None:
+            self.usage_logger.stop()  # Flush logs
         if self._thread.is_alive():
             self._thread.join(timeout=10)
 
@@ -224,12 +235,39 @@ class RotatingKeyManager:
             return None
 
     def record_usage(
-        self, key_obj: KeyUsage, model_id: str, actual_tokens: int, estimated_tokens: int = 1000
+        self,
+        key_obj: KeyUsage,
+        model_id: str,
+        actual_tokens: int,
+        estimated_tokens: int = 1000,
+        track_usage: Optional[bool] = None,
     ) -> None:
-        """Record usage for a specific API key."""
+        """
+        Record usage for a specific API key.
+
+        In-memory accounting (what drives rotation) always happens. The database
+        write happens only when tracking is on - `track_usage` overrides the
+        manager's own setting for this one call (None = use the manager's).
+        """
         with self.lock:
             key_obj.commit(model_id, actual_tokens, estimated_tokens)
+
+        should_log = self.track_usage if track_usage is None else bool(track_usage)
+        if not should_log:
+            return
+        if self.usage_logger is None:
+            raise ConfigurationError(
+                "usage tracking was requested but no usage database is configured "
+                f"for provider '{self.provider_name}'. Build the manager with a "
+                "UsageDatabase, or record usage with track_usage=False."
+            )
         self.usage_logger.log(self.provider_name, model_id, key_obj.api_key, actual_tokens)
+
+    def prune_old_records(self, days_retention: int = 3) -> None:
+        """Prune old rows from the usage database. No-op when there is no db."""
+        if self.db is None:
+            return
+        self.db.prune_old_records(days_retention)
 
     # --- STATS HELPERS ---
 

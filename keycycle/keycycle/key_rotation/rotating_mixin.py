@@ -115,7 +115,12 @@ class RotatingCredentialsMixin:
     def _get_retry_limit(self) -> int:
         return min(self._max_retries, len(self.wrapper.manager.keys) - 1)
 
-    def _record_usage(self, key_obj: KeyUsage, response: Optional["ModelResponse"]):
+    def _record_usage(
+        self,
+        key_obj: KeyUsage,
+        response: Optional["ModelResponse"],
+        track_usage: Optional[bool] = None,
+    ):
         """
         Extracts usage from the response and reports it to the manager.
         Falls back to estimated_tokens if response is None or usage is missing.
@@ -136,7 +141,8 @@ class RotatingCredentialsMixin:
             key_obj=key_obj,
             model_id=self.model_id,
             actual_tokens=actual_tokens,
-            estimated_tokens=self._estimated_tokens
+            estimated_tokens=self._estimated_tokens,
+            track_usage=track_usage
         )
 
     def _create_temp_backoff(self) -> ExponentialBackoff:
@@ -148,6 +154,9 @@ class RotatingCredentialsMixin:
         ))
 
     def invoke(self, *args, **kwargs) -> "ModelResponse":
+        # Per-call tracking override - popped before the kwargs reach the
+        # underlying model, which does not know this keyword.
+        track_usage = kwargs.pop("track_usage", None)
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -157,7 +166,7 @@ class RotatingCredentialsMixin:
             for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
                 try:
                     response = super().invoke(*args, **kwargs)
-                    self._record_usage(key_usage, response)
+                    self._record_usage(key_usage, response, track_usage)
                     return response
                 except Exception as e:
                     # Check for temporary rate limit first - retry with SAME key
@@ -205,6 +214,9 @@ class RotatingCredentialsMixin:
                 raise
 
     async def ainvoke(self, *args, **kwargs) -> "ModelResponse":
+        # Per-call tracking override - popped before the kwargs reach the
+        # underlying model, which does not know this keyword.
+        track_usage = kwargs.pop("track_usage", None)
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -214,7 +226,7 @@ class RotatingCredentialsMixin:
             for temp_attempt in range(TEMP_RATE_LIMIT_MAX_RETRIES + 1):
                 try:
                     response = await super().ainvoke(*args, **kwargs)
-                    self._record_usage(key_usage, response)
+                    self._record_usage(key_usage, response, track_usage)
                     return response
                 except Exception as e:
                     # Check for temporary rate limit first - retry with SAME key
@@ -262,6 +274,9 @@ class RotatingCredentialsMixin:
                 raise
 
     def invoke_stream(self, *args, **kwargs) -> Iterator["ModelResponse"]:
+        # Per-call tracking override - popped before the kwargs reach the
+        # underlying model, which does not know this keyword.
+        track_usage = kwargs.pop("track_usage", None)
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -280,10 +295,10 @@ class RotatingCredentialsMixin:
                         yield chunk
                     if final_usage:
                         dummy_response = _UsageResponse(final_usage)
-                        self._record_usage(key_usage, dummy_response)
+                        self._record_usage(key_usage, dummy_response, track_usage)
                     else:
                         # If the stream didn't return usage data, fallback to estimation
-                        self._record_usage(key_usage, None)
+                        self._record_usage(key_usage, None, track_usage)
 
                     return
                 except Exception as e:
@@ -326,6 +341,9 @@ class RotatingCredentialsMixin:
                 raise
 
     async def ainvoke_stream(self, *args, **kwargs) -> AsyncIterator["ModelResponse"]:
+        # Per-call tracking override - popped before the kwargs reach the
+        # underlying model, which does not know this keyword.
+        track_usage = kwargs.pop("track_usage", None)
         limit = self._get_retry_limit()
 
         for attempt in range(limit + 1):
@@ -347,9 +365,9 @@ class RotatingCredentialsMixin:
                     # Stream completed successfully. Record usage.
                     if final_usage:
                         dummy_response = _UsageResponse(final_usage)
-                        self._record_usage(key_usage, dummy_response)
+                        self._record_usage(key_usage, dummy_response, track_usage)
                     else:
-                        self._record_usage(key_usage, None)
+                        self._record_usage(key_usage, None, track_usage)
 
                     return
                 except Exception as e:

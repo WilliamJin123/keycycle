@@ -275,13 +275,20 @@ class BaseGenericRotatingClient(Generic[T]):
 
         return self.config.client_class(**final_kwargs)
 
-    def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int) -> None:
+    def _record_usage(
+        self,
+        key_usage: KeyUsage,
+        model_id: str,
+        actual_tokens: int,
+        track_usage: Optional[bool] = None,
+    ) -> None:
         """Record usage for a key."""
         self.manager.record_usage(
             key_obj=key_usage,
             model_id=model_id,
             actual_tokens=actual_tokens,
             estimated_tokens=self.config.estimated_tokens,
+            track_usage=track_usage,
         )
 
     def _extract_usage(self, response: Any) -> int:
@@ -301,6 +308,9 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
 
     def _execute(self, path: List[str], args: tuple, kwargs: dict) -> Any:
         """Execute a method call with key rotation."""
+        # Per-call tracking override - popped before the kwargs reach the real
+        # client, which may reject unknown keyword arguments.
+        track_usage = kwargs.pop("track_usage", None)
         model_id = self._get_model_id(kwargs)
         limits = self.limit_resolver(model_id, None)
 
@@ -331,9 +341,11 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                     if hasattr(result, "__iter__") and not isinstance(result, (str, bytes, dict, list)):
                         # Check if it looks like a generator/iterator
                         if hasattr(result, "__next__") or inspect.isgenerator(result):
-                            return self._wrap_stream(result, key_usage, model_id)
+                            return self._wrap_stream(result, key_usage, model_id, track_usage)
 
-                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    self._record_usage(
+                        key_usage, model_id, self._extract_usage(result), track_usage
+                    )
                     return result
 
                 except Exception as e:
@@ -373,7 +385,7 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                         time.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
-                    self._record_usage(key_usage, model_id, 0)
+                    self._record_usage(key_usage, model_id, 0, track_usage)
                     raise
             else:
                 # Inner loop exhausted without success - continue to next key
@@ -389,7 +401,11 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     def _wrap_stream(
-        self, generator: Generator, key_usage: KeyUsage, model_id: str
+        self,
+        generator: Generator,
+        key_usage: KeyUsage,
+        model_id: str,
+        track_usage: Optional[bool] = None,
     ) -> Generator:
         """Wrap a streaming response to track usage and handle errors."""
         final_tokens = 0
@@ -417,7 +433,7 @@ class SyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, final_tokens)
+            self._record_usage(key_usage, model_id, final_tokens, track_usage)
 
 
 class SyncGenericProxyHelper:
@@ -442,6 +458,9 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
 
     async def _execute(self, path: List[str], args: tuple, kwargs: dict) -> Any:
         """Execute a method call with key rotation (async)."""
+        # Per-call tracking override - popped before the kwargs reach the real
+        # client, which may reject unknown keyword arguments.
+        track_usage = kwargs.pop("track_usage", None)
         model_id = self._get_model_id(kwargs)
         limits = self.limit_resolver(model_id, None)
 
@@ -470,9 +489,11 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
 
                     # Handle async streaming responses
                     if hasattr(result, "__aiter__"):
-                        return self._wrap_stream(result, key_usage, model_id)
+                        return self._wrap_stream(result, key_usage, model_id, track_usage)
 
-                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    self._record_usage(
+                        key_usage, model_id, self._extract_usage(result), track_usage
+                    )
                     return result
 
                 except Exception as e:
@@ -512,7 +533,7 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                         await asyncio.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
-                    self._record_usage(key_usage, model_id, 0)
+                    self._record_usage(key_usage, model_id, 0, track_usage)
                     raise
             else:
                 # Inner loop exhausted without success - continue to next key
@@ -528,7 +549,11 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
     async def _wrap_stream(
-        self, generator: AsyncGenerator, key_usage: KeyUsage, model_id: str
+        self,
+        generator: AsyncGenerator,
+        key_usage: KeyUsage,
+        model_id: str,
+        track_usage: Optional[bool] = None,
     ) -> AsyncGenerator:
         """Wrap an async streaming response to track usage and handle errors."""
         final_tokens = 0
@@ -556,7 +581,7 @@ class AsyncGenericRotatingClient(BaseGenericRotatingClient[T]):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, final_tokens)
+            self._record_usage(key_usage, model_id, final_tokens, track_usage)
 
 
 class AsyncGenericProxyHelper:

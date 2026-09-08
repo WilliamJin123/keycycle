@@ -97,12 +97,19 @@ class BaseRotatingClient:
         if self.base_url:
             self.client_kwargs['base_url'] = self.base_url
 
-    def _record_usage(self, key_usage: KeyUsage, model_id: str, actual_tokens: int) -> None:
+    def _record_usage(
+        self,
+        key_usage: KeyUsage,
+        model_id: str,
+        actual_tokens: int,
+        track_usage: Optional[bool] = None,
+    ) -> None:
         self.manager.record_usage(
             key_obj=key_usage,
             model_id=model_id,
             actual_tokens=actual_tokens,
-            estimated_tokens=self.estimated_tokens
+            estimated_tokens=self.estimated_tokens,
+            track_usage=track_usage
         )
 
     def _extract_usage(self, response: Any) -> int:
@@ -123,6 +130,9 @@ class RotatingOpenAIClient(BaseRotatingClient):
         return SyncProxyHelper(self, [name])
 
     def _execute(self, path: List[str], args, kwargs):
+        # Per-call tracking override - popped before the kwargs reach the real
+        # OpenAI client, which rejects unknown keyword arguments.
+        track_usage = kwargs.pop('track_usage', None)
         model_id = kwargs.get('model', self.default_model)
         if 'model' not in kwargs:
             kwargs['model'] = model_id
@@ -154,9 +164,11 @@ class RotatingOpenAIClient(BaseRotatingClient):
                     result = target(*args, **kwargs)
 
                     if kwargs.get('stream', False):
-                        return self._wrap_stream(result, key_usage, model_id)
+                        return self._wrap_stream(result, key_usage, model_id, track_usage)
 
-                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    self._record_usage(
+                        key_usage, model_id, self._extract_usage(result), track_usage
+                    )
                     return result
 
                 except Exception as e:
@@ -194,7 +206,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
                         time.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
-                    self._record_usage(key_usage, model_id, 0)
+                    self._record_usage(key_usage, model_id, 0, track_usage)
                     raise
             else:
                 # Inner loop exhausted without success - continue to next key
@@ -209,7 +221,13 @@ class RotatingOpenAIClient(BaseRotatingClient):
 
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
-    def _wrap_stream(self, generator: Generator, key_usage: KeyUsage, model_id: str):
+    def _wrap_stream(
+        self,
+        generator: Generator,
+        key_usage: KeyUsage,
+        model_id: str,
+        track_usage: Optional[bool] = None,
+    ):
         final_tokens = 0
         try:
             for chunk in generator:
@@ -233,7 +251,7 @@ class RotatingOpenAIClient(BaseRotatingClient):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, final_tokens)
+            self._record_usage(key_usage, model_id, final_tokens, track_usage)
 
 class SyncProxyHelper:
     def __init__(self, client: RotatingOpenAIClient, path: List[str]):
@@ -257,6 +275,9 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
         return AsyncProxyHelper(self, [name])
 
     async def _execute(self, path: List[str], args, kwargs: dict):
+        # Per-call tracking override - popped before the kwargs reach the real
+        # OpenAI client, which rejects unknown keyword arguments.
+        track_usage = kwargs.pop('track_usage', None)
         model_id = kwargs.get('model', self.default_model)
         if 'model' not in kwargs:
             kwargs['model'] = model_id
@@ -288,9 +309,11 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                     result = await target(*args, **kwargs)
 
                     if kwargs.get('stream', False):
-                        return self._wrap_stream(result, key_usage, model_id)
+                        return self._wrap_stream(result, key_usage, model_id, track_usage)
 
-                    self._record_usage(key_usage, model_id, self._extract_usage(result))
+                    self._record_usage(
+                        key_usage, model_id, self._extract_usage(result), track_usage
+                    )
                     return result
 
                 except Exception as e:
@@ -328,7 +351,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                         await asyncio.sleep(KEY_ROTATION_DELAY_SECONDS)
                         break  # Break inner loop, continue outer loop with new key
 
-                    self._record_usage(key_usage, model_id, 0)
+                    self._record_usage(key_usage, model_id, 0, track_usage)
                     raise
             else:
                 # Inner loop exhausted without success - continue to next key
@@ -343,7 +366,13 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
 
         raise RuntimeError(f"All retry attempts exhausted for {model_id}")
 
-    async def _wrap_stream(self, generator: AsyncGenerator, key_usage: KeyUsage, model_id: str):
+    async def _wrap_stream(
+        self,
+        generator: AsyncGenerator,
+        key_usage: KeyUsage,
+        model_id: str,
+        track_usage: Optional[bool] = None,
+    ):
         final_tokens = 0
         try:
             async for chunk in generator:
@@ -367,7 +396,7 @@ class RotatingAsyncOpenAIClient(BaseRotatingClient):
                 self.manager.force_rotate_index()
             raise
         finally:
-            self._record_usage(key_usage, model_id, final_tokens)
+            self._record_usage(key_usage, model_id, final_tokens, track_usage)
 
 class AsyncProxyHelper:
     def __init__(self, client: RotatingAsyncOpenAIClient, path: List[str]):

@@ -26,7 +26,8 @@ class MockAgnoModel:
 def mock_wrapper():
     """
     Creates a MultiProviderWrapper with 3 fake API keys.
-    We patch 'load_api_keys' so we don't need a real .env file.
+    We patch 'load_api_keys' so we don't need a real .env file, and run with
+    track_usage=False so no usage database (TIDB_DB_URL) is needed either.
     """
     fake_keys = ["sk-key-1-alpha", "sk-key-2-beta", "sk-key-3-gamma"]
     
@@ -36,7 +37,8 @@ def mock_wrapper():
             provider="test_provider",
             api_keys=fake_keys,
             default_model_id="test-model",
-            model_class=MockAgnoModel
+            model_class=MockAgnoModel,
+            track_usage=False
         )
         return wrapper
 
